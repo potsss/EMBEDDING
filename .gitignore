@@ -66,4 +66,5 @@ experiments/
 # Consider adding these if they are large or not essential to version control:
 # data/edu.csv
 # data/embeddings.pkl
-# data/label.csv 
+# data/label.csv
+data/
