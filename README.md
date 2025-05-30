@@ -96,6 +96,8 @@ python main.py --mode train
 python main.py --mode evaluate
 python main.py --mode visualize
 python main.py --mode compute_embeddings
+# 评估和可视化步骤可以不执行
+
 ```
 
 ### 3. 命令行参数
@@ -164,6 +166,7 @@ RANDOM_SEED = 42
 
 - `build_graph_from_sequences`: 从用户行为序列构建物品-物品交互图。
 - `generate_node2vec_walks`: 在构建的图上根据 p 和 q 参数生成带偏向的随机游走序列。
+- 生成随机游走图会比较花时间，可以控制超参数 `NUM_WALKS` 和 `WALK_LENGTH` 来减少时间。
 
 ### 通用工具 (`utils/utils.py`)
 
@@ -189,11 +192,13 @@ RANDOM_SEED = 42
 - 物品相似度评估（平均/标准差/最小/最大相似度）
 - 用户间相似度评估（平均/标准差/最小/最大相似度）
 - 嵌入向量质量评估（平均/标准差范数，平均/标准差向量间距离）
+- 可以采用其他的方式来对生成结果进行评估，这个评估方法在数据量较大时，计算量会非常大，需要根据实际情况选择。
 
 ### 可视化器 (`visualizer.py`)
 
 - 用户嵌入向量 t-SNE 可视化
 - 物品嵌入向量 t-SNE 可视化
+- 只是直观展示一下结果，可以采用其他的方式来评估，这个步骤同样可以不执行。
 
 ## 输出结果
 
