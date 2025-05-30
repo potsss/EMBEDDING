@@ -7,6 +7,7 @@
 本项目的目标是训练一个用户表示向量，用于表示用户的兴趣偏好。主要特点：
 
 - 使用Item2Vec模型训练URL的向量表示
+- （新增）支持Node2Vec模型，通过构建物品交互图并生成随机游走来学习物品的向量表示
 - 用户的表示向量是用户访问的URL向量表示的加权平均（或其他聚合方式）
 - 基于PyTorch实现，支持GPU加速
 - 包含完整的数据预处理、模型训练、评估和可视化流程
@@ -38,6 +39,11 @@ user_id	url	timestamp_str	weight
 ├── visualizer.py            # 可视化模块
 ├── utils.py                 # 工具函数 (例如: create_sample_data)
 ├── data/                    # 原始数据目录 (例如: data/user_behavior.csv)
+├── node2vec_utils.py        # Node2Vec图构建和随机游走工具
+├── utils/                   # 工具文件夹
+│   ├── __init__.py
+│   ├── utils.py             # 通用工具函数
+│   └── node2vec_utils.py    # Node2Vec相关工具函数
 └── experiments/             # 实验结果的根目录
     └── {EXPERIMENT_NAME}/    # 单次实验的目录 (例如: experiments/edu_20230101_120000)
         ├── processed_data/   # 处理后的数据 (url_mappings.pkl, user_sequences.pkl)
@@ -64,8 +70,8 @@ pip install -r requirements.txt
 
 如果需要示例数据，可以运行 (假设 `utils.py` 中有 `create_sample_data` 函数):
 ```python
-# (在Python解释器中或脚本中)
-# from utils import create_sample_data
+# (在Python解释器或脚本中)
+# from utils.utils import create_sample_data # 修改导入路径
 # create_sample_data("data/sample_user_behavior.csv")
 ```
 
@@ -73,15 +79,20 @@ pip install -r requirements.txt
 
 ```bash
 # 运行完整流程（数据预处理 + 训练 + 评估 + 可视化 + 计算嵌入）
-# 需提供原始数据路径
+# 模型类型在 config.py 中设置 (Config.MODEL_TYPE)
 python main.py --mode all --data_path data/your_data.csv
 
+# 例如，如果要在 config.py 中使用 Node2Vec，请先修改该文件
+# 然后运行:
+# python main.py --mode all --data_path data/your_data.csv
+
 # 指定实验名称 (可选, 否则使用config.py中的默认名称)
-python main.py --mode all --data_path data/your_data.csv --experiment_name my_custom_experiment
+# python main.py --mode all --data_path data/your_data.csv --experiment_name my_custom_experiment
 
 # 或者分步骤运行 (后续步骤会自动查找默认实验路径下的数据和模型)
+# (确保 config.py 中的 MODEL_TYPE 设置正确)
 python main.py --mode preprocess --data_path data/your_data.csv
-python main.py --mode train
+python main.py --mode train 
 python main.py --mode evaluate
 python main.py --mode visualize
 python main.py --mode compute_embeddings
@@ -115,10 +126,17 @@ EXPERIMENT_NAME = "edu"   # 默认实验名称
 DATA_PATH = "data/edu.csv" # 默认原始数据路径 (会被命令行参数覆盖)
 
 # 模型相关配置
+MODEL_TYPE = "item2vec"   # 或 "node2vec"，在此处修改模型类型
 EMBEDDING_DIM = 128        # 嵌入维度
-WINDOW_SIZE = 5           # 上下文窗口大小
+WINDOW_SIZE = 5           # 上下文窗口大小 (Item2Vec 和 Node2Vec SkipGram)
 MIN_COUNT = 5             # 用户序列最小长度 (用于data_preprocessing.py)
-NEGATIVE_SAMPLES = 5      # 负采样数量
+NEGATIVE_SAMPLES = 5      # 负采样数量 (Item2Vec 和 Node2Vec SkipGram)
+
+# Node2Vec 特定参数 (config.py)
+P_PARAM = 1.0             # Node2Vec 返回参数 p
+Q_PARAM = 1.0             # Node2Vec 进出参数 q
+WALK_LENGTH = 80          # Node2Vec 随机游走长度
+NUM_WALKS = 10            # Node2Vec 每个节点的游走次数
 
 # 训练参数
 LEARNING_RATE = 0.001     # 学习率
@@ -142,9 +160,19 @@ RANDOM_SEED = 42
 - URL处理：提取domain，创建ID映射
 - 序列构建：根据权重和时间戳构建用户访问序列，并按最小长度过滤
 
+### Node2Vec 工具 (`utils/node2vec_utils.py`)
+
+- `build_graph_from_sequences`: 从用户行为序列构建物品-物品交互图。
+- `generate_node2vec_walks`: 在构建的图上根据 p 和 q 参数生成带偏向的随机游走序列。
+
+### 通用工具 (`utils/utils.py`)
+
+- 包含日志设置、文件读写、示例数据生成等多种辅助函数。
+
 ### 模型定义 (`model.py`)
 
-- `Item2Vec`: 基于Skip-gram的物品嵌入模型，实现负采样损失。
+- `Item2Vec`: 基于Skip-gram的物品嵌入模型，实现负采样损失，直接在用户序列上训练。
+- `Node2Vec`: 同样基于Skip-gram的物品嵌入模型，但在`utils.node2vec_utils.py`生成的随机游走序列上训练。
 - `UserEmbedding`: 用户嵌入计算类，支持多种聚合策略（默认为均值聚合）。
 
 ### 训练器 (`trainer.py`)
@@ -173,7 +201,9 @@ RANDOM_SEED = 42
 
 ### 1. 模型与数据文件
 - `experiments/{EXPERIMENT_NAME}/models/item2vec_model.pth`: 训练好的Item2Vec模型参数。
-- `experiments/{EXPERIMENT_NAME}/models/user_embeddings.pkl`: 计算出的用户嵌入向量。
+- `experiments/{EXPERIMENT_NAME}/models/node2vec_model.pth`: 训练好的Node2Vec模型参数。
+- `experiments/{EXPERIMENT_NAME}/models/user_embeddings.pkl`: 基于Item2Vec计算出的用户嵌入向量。
+- `experiments/{EXPERIMENT_NAME}/models/user_embeddings_node2vec.pkl`: 基于Node2Vec计算出的用户嵌入向量。
 - `experiments/{EXPERIMENT_NAME}/processed_data/url_mappings.pkl`: URL到ID的映射。
 - `experiments/{EXPERIMENT_NAME}/processed_data/user_sequences.pkl`: 处理后的用户行为序列。
 - `experiments/{EXPERIMENT_NAME}/checkpoints/latest_checkpoint.pth`: 最新训练检查点。
@@ -220,40 +250,68 @@ RANDOM_SEED = 42
 
 # # 3. 训练模型 (如果尚未训练)
 # # vocab_size = len(url_mappings['url_to_id'])
+
+# # --- Item2Vec 示例 ---
 # # from model import Item2Vec
 # # item2vec_model = Item2Vec(vocab_size, Config.EMBEDDING_DIM)
 # # from trainer import Trainer
 # # trainer_instance = Trainer(item2vec_model)
-# # trainer_instance.train(user_sequences)
-# # print("模型训练完成。")
+# # trainer_instance.train(user_sequences) # Item2Vec 直接使用 user_sequences
+# # print("Item2Vec模型训练完成。")
+
+# # --- Node2Vec 示例 ---
+# # from model import Node2Vec
+# # from utils.node2vec_utils import build_graph_from_sequences, generate_node2vec_walks # 修改导入路径
+# # item_graph = build_graph_from_sequences(user_sequences)
+# # walks = generate_node2vec_walks(item_graph, Config.NUM_WALKS, Config.WALK_LENGTH, Config.P_PARAM, Config.Q_PARAM)
+# # node2vec_model = Node2Vec(vocab_size, Config.EMBEDDING_DIM)
+# # from trainer import Trainer
+# # trainer_instance_n2v = Trainer(node2vec_model)
+# # trainer_instance_n2v.train(walks) # Node2Vec 使用生成的 walks
+# # print("Node2Vec模型训练完成。")
 
 # # 4. 加载已训练的模型
 # from main import load_trained_model # main.py中的辅助函数
 # vocab_size = len(url_mappings['url_to_id'])
-# model_load_path = os.path.join(Config.MODEL_SAVE_PATH, 'item2vec_model.pth')
-# loaded_model = load_trained_model(model_load_path, vocab_size)
-# if loaded_model is None:
-#     print("模型加载失败，请检查路径和预处理步骤。")
+
+# # 加载 Item2Vec 模型
+# # model_load_path = os.path.join(Config.MODEL_SAVE_PATH, 'item2vec_model.pth') 
+# # loaded_model = load_trained_model(model_load_path, vocab_size) 
+
+# # 加载 Node2Vec 模型 (假设 main.py 中的加载逻辑已更新支持Node2Vec)
+# from model import Node2Vec # 需要导入Node2Vec类
+# model_load_path_n2v = os.path.join(Config.MODEL_SAVE_PATH, 'node2vec_model.pth')
+# loaded_model = Node2Vec(vocab_size, Config.EMBEDDING_DIM) # 临时做法，实际应通过函数加载
+# if os.path.exists(model_load_path_n2v):
+#     checkpoint = torch.load(model_load_path_n2v, map_location=torch.device(Config.DEVICE))
+#     loaded_model.load_state_dict(checkpoint['model_state_dict'])
+#     print("Node2Vec 模型加载成功。")
 # else:
-#     print("模型加载成功。")
+#     print("Node2Vec 模型加载失败")
+#     loaded_model = None
 
-#     # 5. 计算用户嵌入
-#     # user_embeddings = compute_user_embeddings(loaded_model, user_sequences, url_mappings) # compute_user_embeddings 在 main.py
-#     # print(f"计算了 {len(user_embeddings)} 个用户嵌入。")
+# if loaded_model is None:
+# print("模型加载失败，请检查路径和预处理步骤。")
+# else:
+# print("模型加载成功。")
 
-#     # 或者直接使用 UserEmbedding 类获取相似用户
-#     from model import UserEmbedding
-#     user_emb_calculator = UserEmbedding(loaded_model, user_sequences, url_mappings)
-#     all_user_embeddings = user_emb_calculator.compute_user_embeddings() # 计算并存储在实例中
+# # 5. 计算用户嵌入
+# # user_embeddings = compute_user_embeddings(loaded_model, user_sequences, url_mappings) # compute_user_embeddings 在 main.py
+# # print(f"计算了 {len(user_embeddings)} 个用户嵌入。")
+
+# # 或者直接使用 UserEmbedding 类获取相似用户
+# from model import UserEmbedding
+# user_emb_calculator = UserEmbedding(loaded_model, user_sequences, url_mappings)
+# all_user_embeddings = user_emb_calculator.compute_user_embeddings() # 计算并存储在实例中
     
-#     # 假设我们想找 'some_user_id' 的相似用户 (确保该ID存在于user_sequences.keys())
-#     target_user_id = list(user_sequences.keys())[0] if user_sequences else None
-#     if target_user_id:
-#         similar_users, scores = user_emb_calculator.get_similar_users(target_user_id, top_k=5)
-#         print(f"与用户 {target_user_id} 最相似的用户: {similar_users}")
-#         print(f"相似度分数: {scores}")
-#     else:
-#         print("没有用户序列数据，无法获取相似用户。")
+# # 假设我们想找 'some_user_id' 的相似用户 (确保该ID存在于user_sequences.keys())
+# target_user_id = list(user_sequences.keys())[0] if user_sequences else None
+# if target_user_id:
+# similar_users, scores = user_emb_calculator.get_similar_users(target_user_id, top_k=5)
+# print(f"与用户 {target_user_id} 最相似的用户: {similar_users}")
+# print(f"相似度分数: {scores}")
+# else:
+# print("没有用户序列数据，无法获取相似用户。")
 
 ```
 *上述代码片段为演示目的，实际使用时建议通过 `main.py` 的命令行接口运行完整流程。*
@@ -347,7 +405,7 @@ else:
 
 项目设计考虑了一定的可扩展性：
 
-1. **多种嵌入模型**: `model.py` 中的 `Item2Vec` 可以被替换或扩展为其他序列嵌入算法 (如GRU4Rec, BERT4Rec等，但这需要较大改动)。
+1. **多种嵌入模型**: `model.py` 中的 `Item2Vec` 可以被替换或扩展为其他序列嵌入算法 (如GRU4Rec, BERT4Rec等，但这需要较大改动)。本项目已扩展支持 `Node2Vec`。
 2. **自定义聚合策略**: `UserEmbedding` 类可以方便地添加新的用户序列聚合方法。
 3. **自定义评估指标**: `evaluator.py` 可以添加更多针对特定业务场景的评估指标。
 4. **在线推理**: 当前项目主要关注离线训练和评估。要部署为在线推荐服务，需要额外开发服务接口和模型加载、实时预测逻辑。

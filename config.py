@@ -58,7 +58,7 @@ class Config:
     包含所有模型训练和评估的参数
     """
     # 实验配置
-    EXPERIMENT_NAME = "edu1"
+    EXPERIMENT_NAME = "node2vec"
     
     # 基础路径配置
     BASE_DIR = BASE_DIR
@@ -69,19 +69,35 @@ class Config:
     DATA_PATH = "data/edu.csv"
     
     # 模型相关配置
+    MODEL_TYPE = "node2vec"  # 可选 "item2vec" 或 "node2vec"
     EMBEDDING_DIM = 128
     WINDOW_SIZE = 5
     MIN_COUNT = 5
     NEGATIVE_SAMPLES = 5
-    LEARNING_RATE = 0.001
-    EPOCHS = 0
-    BATCH_SIZE = 1024
+    
+    
+    # Node2Vec specific parameters
+    P_PARAM = 1.0  # Return parameter
+    Q_PARAM = 1.0  # In-out parameter
+    WALK_LENGTH = 20  # Length of each random walk
+    NUM_WALKS = 4  # Number of walks per node
+    NODE2VEC_PRECOMPUTE = False  # True: 预计算边转移概率(慢启动，快游走); False: 动态计算(快启动，稍慢游走)
+    
+    # Node2Vec 缓存配置
+    USE_WALKS_CACHE = True  # 是否使用随机游走缓存
+    FORCE_REGENERATE_WALKS = False  # 是否强制重新生成随机游走（忽略缓存）
     
     # 训练相关配置
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    EARLY_STOPPING_PATIENCE = 50
+    LEARNING_RATE = 0.001
+    EPOCHS = 8
+    BATCH_SIZE = 4096
+    RANDOM_SEED = 42
+    NUM_WORKERS = 0  # DataLoader的num_workers, Windows默认为0, Linux可尝试 os.cpu_count() // 2
+    PIN_MEMORY = True if DEVICE == "cuda" else False # DataLoader的pin_memory
     
     # 评估相关配置
+    EARLY_STOPPING_PATIENCE = 2
     EVAL_INTERVAL = 2
     TOP_K = 10
     
@@ -89,7 +105,4 @@ class Config:
     CLUSTER_NUM = 10
     
     # 随机种子
-    RANDOM_SEED = 42
-
-# 初始化实验路径的逻辑将移到 main.py 中，以便根据模式进行更灵活的控制
-# 此处不再自动调用 get_experiment_paths 和 setattr
+    

@@ -7,7 +7,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
-# python train_label_discriminator.py --embeddings_path data\embeddings.pkl --labels_path data\label.csv
+# python train_label_discriminator.py --embeddings_path experiments\node2vec\models\user_embeddings_node2vec.pkl --labels_path data\label.csv
 
 
 def load_data(embeddings_path, labels_path):

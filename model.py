@@ -149,6 +149,85 @@ class Item2Vec(nn.Module):
         if freeze:
             self.in_embeddings.weight.requires_grad = False
 
+class Node2Vec(nn.Module):
+    """
+    Node2Vec模型，与Item2Vec非常相似，因为它也使用Skip-gram架构。
+    主要区别在于它在图上生成的随机游走序列上进行训练，而不是直接在用户行为序列上。
+    """
+    def __init__(self, vocab_size, embedding_dim, config=Config):
+        super(Node2Vec, self).__init__()
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        self.config = config
+        
+        # 输入嵌入层（中心词）
+        self.in_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        
+        # 输出嵌入层（上下文词）
+        self.out_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        
+        # 初始化权重
+        self.init_weights()
+    
+    def init_weights(self):
+        """
+        权重初始化策略
+        """
+        init_range = 0.5 / self.embedding_dim
+        nn.init.uniform_(self.in_embeddings.weight, -init_range, init_range)
+        nn.init.constant_(self.out_embeddings.weight, 0)
+    
+    def forward(self, center_words, context_words, negative_words):
+        """
+        前向传播
+        Args:
+            center_words: 中心词ID [batch_size]
+            context_words: 上下文词ID [batch_size]
+            negative_words: 负采样词ID [batch_size, negative_samples]
+        """
+        center_embeds = self.in_embeddings(center_words)  # [batch_size, embedding_dim]
+        context_embeds = self.out_embeddings(context_words)  # [batch_size, embedding_dim]
+        
+        pos_score = torch.sum(center_embeds * context_embeds, dim=1)  # [batch_size]
+        pos_loss = F.logsigmoid(pos_score)
+        
+        neg_embeds = self.out_embeddings(negative_words)  # [batch_size, negative_samples, embedding_dim]
+        center_embeds_expanded = center_embeds.unsqueeze(1)  # [batch_size, 1, embedding_dim]
+        neg_score = torch.sum(neg_embeds * center_embeds_expanded, dim=2)  # [batch_size, negative_samples]
+        neg_loss = F.logsigmoid(-neg_score).sum(dim=1)  # [batch_size]
+        
+        loss = -(pos_loss + neg_loss).mean()
+        return loss
+    
+    def get_embeddings(self, normalize=True):
+        """
+        获取训练好的节点嵌入向量
+        """
+        embeddings = self.in_embeddings.weight.data.cpu().numpy()
+        if normalize:
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            norms[norms == 0] = 1
+            embeddings = embeddings / norms
+        return embeddings
+
+    def get_similar_items(self, item_id, top_k=10, normalize=True):
+        """
+        获取与指定item最相似的items (与Item2Vec中的方法相同)
+        """
+        embeddings = self.get_embeddings(normalize=normalize)
+        item_embed = embeddings[item_id]
+        
+        if normalize:
+            similarities = np.dot(embeddings, item_embed)
+        else:
+            similarities = np.dot(embeddings, item_embed) / (
+                np.linalg.norm(embeddings, axis=1) * np.linalg.norm(item_embed)
+            )
+        
+        similar_indices = np.argsort(similarities)[::-1][1:top_k+1]
+        similar_scores = similarities[similar_indices]
+        return similar_indices, similar_scores
+
 class UserEmbedding:
     """
     用户嵌入类，用于计算用户的向量表示

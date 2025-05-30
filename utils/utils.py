@@ -249,77 +249,85 @@ def create_experiment_config(config_dict, save_path=None):
     
     if save_path:
         save_json(experiment_config, save_path)
-    
+        print(f"实验配置已保存到: {save_path}")
+        
     return experiment_config
 
 def get_git_commit():
     """
-    获取当前git提交hash
+    获取当前的git commit hash
     """
     try:
         import subprocess
-        result = subprocess.run(['git', 'rev-parse', 'HEAD'], 
-                              capture_output=True, text=True)
-        return result.stdout.strip() if result.returncode == 0 else None
+        commit = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).strip().decode('utf-8')
+        return commit
     except:
-        return None
+        return "N/A"
 
 def get_python_version():
     """
     获取Python版本
     """
     import sys
-    return sys.version
+    return sys.version.split()[0]
 
 def get_package_versions():
     """
-    获取主要包的版本信息
+    获取主要依赖包的版本
     """
-    packages = ['torch', 'numpy', 'pandas', 'sklearn', 'matplotlib', 'seaborn']
-    versions = {}
-    
-    for package in packages:
-        try:
-            module = __import__(package)
-            versions[package] = getattr(module, '__version__', 'unknown')
-        except ImportError:
-            versions[package] = 'not installed'
-    
-    return versions
+    try:
+        import torch
+        import pandas
+        import numpy
+        import sklearn
+        import matplotlib
+        import tqdm
+        
+        versions = {
+            'torch': torch.__version__,
+            'pandas': pandas.__version__,
+            'numpy': numpy.__version__,
+            'scikit-learn': sklearn.__version__,
+            'matplotlib': matplotlib.__version__,
+            'tqdm': tqdm.__version__
+        }
+        return versions
+    except ImportError:
+        return {"error": "Could not retrieve all package versions."}
 
 def validate_config(config):
     """
-    验证配置参数
+    验证配置项的有效性
     """
     required_attrs = [
-        'EMBEDDING_DIM', 'LEARNING_RATE', 'EPOCHS', 'BATCH_SIZE',
-        'WINDOW_SIZE', 'MIN_COUNT', 'NEGATIVE_SAMPLES'
+        'EXPERIMENT_NAME', 'DATA_PATH', 'EMBEDDING_DIM', 'WINDOW_SIZE', 
+        'MIN_COUNT', 'NEGATIVE_SAMPLES', 'LEARNING_RATE', 'EPOCHS', 'BATCH_SIZE',
+        'P_PARAM', 'Q_PARAM', 'WALK_LENGTH', 'NUM_WALKS' # Node2Vec参数
     ]
     
-    for attr in required_attrs:
-        if not hasattr(config, attr):
-            raise ValueError(f"配置缺少必需参数: {attr}")
+    missing = [attr for attr in required_attrs if not hasattr(config, attr)]
+    if missing:
+        raise ValueError(f"配置缺失必要属性: {', '.join(missing)}")
     
-    # 检查参数范围
     if config.EMBEDDING_DIM <= 0:
-        raise ValueError("嵌入维度必须大于0")
+        raise ValueError("EMBEDDING_DIM 必须为正整数")
+    if config.WINDOW_SIZE <= 0:
+        raise ValueError("WINDOW_SIZE 必须为正整数")
+    # 可以添加更多验证逻辑
     
-    if config.LEARNING_RATE <= 0:
-        raise ValueError("学习率必须大于0")
-    
-    if config.EPOCHS <= 0:
-        raise ValueError("训练轮次必须大于0")
-    
-    if config.BATCH_SIZE <= 0:
-        raise ValueError("批次大小必须大于0")
-    
-    print("配置验证通过")
+    print("配置验证通过。")
 
 if __name__ == "__main__":
-    # 创建示例数据
-    sample_data_path = "data/sample_user_behavior.csv"
-    create_sample_data(sample_data_path)
-    
-    # 检查数据质量
-    df = pd.read_csv(sample_data_path, sep='\t')
-    check_data_quality(df) 
+    # 示例：创建示例数据
+    # create_sample_data("data/sample_user_behavior_with_interest.csv", n_records=50000)
+
+    # 示例：设置日志
+    # logger = setup_logging()
+    # logger.info("这是一条日志信息")
+
+    # 示例: 验证Config (假设Config类已定义且可访问)
+    # try:
+    #     validate_config(Config)
+    # except ValueError as e:
+    #     print(f"配置错误: {e}")
+    pass 

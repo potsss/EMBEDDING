@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 import random
 from collections import Counter
 from config import Config
-from model import Item2Vec
+from model import Item2Vec, Node2Vec
 
 class SkipGramDataset(Dataset):
     """
@@ -273,12 +273,21 @@ class Trainer:
         os.makedirs(config.MODEL_SAVE_PATH, exist_ok=True)
         os.makedirs(config.LOG_DIR, exist_ok=True)
     
-    def create_dataloader(self, user_sequences):
+    def create_dataloader(self, sequences_input):
         """
         创建数据加载器
+        Args:
+            sequences_input: 可以是用户序列字典 {user_id: [item_ids]} 或游走序列列表 [[item_ids]]
         """
-        # 将用户序列合并为一个大序列列表
-        all_sequences = list(user_sequences.values())
+        # 检查输入类型并相应处理
+        if isinstance(sequences_input, dict):
+            # 传统的用户序列字典格式
+            all_sequences = list(sequences_input.values())
+        elif isinstance(sequences_input, list):
+            # Node2Vec 游走序列列表格式
+            all_sequences = sequences_input
+        else:
+            raise ValueError(f"不支持的序列输入类型: {type(sequences_input)}")
         
         dataset = SkipGramDataset(
             sequences=all_sequences,
@@ -291,7 +300,8 @@ class Trainer:
             dataset,
             batch_size=self.config.BATCH_SIZE,
             shuffle=True,
-            num_workers=0  # Windows下设为0
+            num_workers=self.config.NUM_WORKERS,  # 使用Config中的设置
+            pin_memory=self.config.PIN_MEMORY  # 使用Config中的设置
         )
         
         return dataloader
@@ -421,14 +431,17 @@ class Trainer:
         plt.savefig(os.path.join(self.config.LOG_DIR, 'training_curves.png'))
         plt.show()
     
-    def train(self, user_sequences, resume_from_checkpoint=False):
+    def train(self, sequences_input, resume_from_checkpoint=False):
         """
         完整的训练流程
+        Args:
+            sequences_input: 可以是用户序列字典 {user_id: [item_ids]} 或游走序列列表 [[item_ids]]
+            resume_from_checkpoint: 是否从检查点恢复训练
         """
         print("开始训练...")
         
         # 创建数据加载器
-        dataloader = self.create_dataloader(user_sequences)
+        dataloader = self.create_dataloader(sequences_input)
         
         # 分割训练和验证集
         train_size = int(0.8 * len(dataloader.dataset))
@@ -437,8 +450,18 @@ class Trainer:
             dataloader.dataset, [train_size, val_size]
         )
         
-        train_loader = DataLoader(train_dataset, batch_size=self.config.BATCH_SIZE, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=self.config.BATCH_SIZE, shuffle=False)
+        train_loader = DataLoader(train_dataset, 
+                                batch_size=self.config.BATCH_SIZE, 
+                                shuffle=True, 
+                                num_workers=self.config.NUM_WORKERS, # 使用Config中的设置
+                                pin_memory=self.config.PIN_MEMORY # 使用Config中的设置
+                                )
+        val_loader = DataLoader(val_dataset, 
+                              batch_size=self.config.BATCH_SIZE, 
+                              shuffle=False, 
+                              num_workers=self.config.NUM_WORKERS, # 使用Config中的设置
+                              pin_memory=self.config.PIN_MEMORY # 使用Config中的设置
+                              )
         
         # 恢复训练
         start_epoch = 0
@@ -504,14 +527,28 @@ class Trainer:
     def save_model(self):
         """
         保存最终模型
+        根据模型类型保存到不同的文件名，例如 item2vec_model.pth 或 node2vec_model.pth
         """
-        model_path = os.path.join(self.config.MODEL_SAVE_PATH, 'item2vec_model.pth')
-        torch.save({
+        model_filename = "item2vec_model.pth"
+        if isinstance(self.model, Node2Vec):
+            model_filename = "node2vec_model.pth"
+            
+        model_path = os.path.join(self.config.MODEL_SAVE_PATH, model_filename)
+        
+        # 保存与模型相关的信息，config可以帮助重建环境
+        # vocab_size 和 embedding_dim 可以从 self.model 获取
+        save_dict = {
             'model_state_dict': self.model.state_dict(),
             'vocab_size': self.model.vocab_size,
             'embedding_dim': self.model.embedding_dim,
-            'config': self.config
-        }, model_path)
+            # 'config': self.config # 保存整个Config对象可能不是最佳实践，特别是如果它包含不可序列化的部分
+                                     # 或者可以考虑只保存必要的配置项
+            'model_type': self.model.__class__.__name__ # 保存模型类名，便于加载时识别
+        }
+        # 确保Config对象中的DEVICE_OBJ不会被序列化，因为它是一个torch.device对象
+        # 如果需要保存config，最好将其转换为字典并排除DEVICE_OBJ
+
+        torch.save(save_dict, model_path)
         
         print(f"模型已保存到: {model_path}")
     

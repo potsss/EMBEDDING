@@ -16,6 +16,10 @@ from trainer import Trainer
 from evaluator import Evaluator
 from visualizer import Visualizer
 
+# 导入Node2Vec相关的模块
+from model import Node2Vec
+from utils.node2vec_utils import build_graph_from_sequences, generate_node2vec_walks, generate_node2vec_walks_precompute, generate_node2vec_walks_with_cache
+
 def set_random_seed(seed):
     """
     设置随机种子
@@ -175,6 +179,64 @@ def train_model(user_sequences, url_mappings, resume=False):
     
     return model, trainer
 
+def train_node2vec_model(user_sequences, url_mappings, resume=False):
+    """
+    训练 Node2Vec 模型
+    """
+    print("="*50)
+    print("开始 Node2Vec 模型训练")
+    print("="*50)
+
+    # 1. 从用户序列构建图
+    # Node2Vec 通常在无向图上效果更好，权重可以来自共现频率
+    item_graph = build_graph_from_sequences(user_sequences, directed=False)
+    if not item_graph:
+        print("错误:未能从用户序列构建图。请检查数据。")
+        return None, None
+
+    # 2. 生成随机游走
+    print("生成 Node2Vec 随机游走...")
+    
+    # 使用带缓存的随机游走生成器
+    node2vec_walks = generate_node2vec_walks_with_cache(
+        graph=item_graph,
+        num_walks=Config.NUM_WALKS,
+        walk_length=Config.WALK_LENGTH,
+        p=Config.P_PARAM,
+        q=Config.Q_PARAM,
+        use_cache=Config.USE_WALKS_CACHE,
+        force_regenerate=Config.FORCE_REGENERATE_WALKS
+    )
+    if not node2vec_walks:
+        print("错误:未能生成 Node2Vec 随机游走。")
+        return None, None
+    
+    print(f"已生成 {len(node2vec_walks)} 条随机游走。")
+
+    # 3. 创建 Node2Vec 模型
+    vocab_size = len(url_mappings['url_to_id']) # 词汇表大小与Item2Vec相同
+    model = Node2Vec(vocab_size, Config.EMBEDDING_DIM)
+    
+    print(f"Node2Vec 模型参数:")
+    print(f"  词汇表大小: {vocab_size}")
+    print(f"  嵌入维度: {Config.EMBEDDING_DIM}")
+    print(f"  P参数: {Config.P_PARAM}")
+    print(f"  Q参数: {Config.Q_PARAM}")
+    print(f"  游走长度: {Config.WALK_LENGTH}")
+    print(f"  每个节点的游走次数: {Config.NUM_WALKS}")
+    print(f"  设备: {Config.DEVICE}")
+
+    # 4. 创建训练器
+    trainer = Trainer(model) # Trainer应该可以复用
+
+    # 5. 开始训练 (使用生成的随机游走作为输入序列)
+    # 注意: Trainer 的 create_dataloader 和 SkipGramDataset 需要能够处理这些游走
+    # SkipGramDataset 期望的是一个序列列表，这与 node2vec_walks 的输出格式一致
+    print("开始使用生成的游走训练 Node2Vec 模型...")
+    trainer.train(node2vec_walks, resume_from_checkpoint=resume) # 将游走序列传递给训练器
+    
+    return model, trainer
+
 def evaluate_model(model, user_sequences, url_mappings):
     """
     评估模型
@@ -273,7 +335,7 @@ def main():
     """
     主函数
     """
-    parser = argparse.ArgumentParser(description='Item2Vec用户表示向量训练项目')
+    parser = argparse.ArgumentParser(description='Item2Vec/Node2Vec用户表示向量训练项目')
     parser.add_argument('--mode', type=str, choices=['preprocess', 'train', 'evaluate', 'visualize', 'compute_embeddings', 'all'], 
                        default='all', help='运行模式 (preprocess, train, evaluate, visualize, compute_embeddings, all)')
     parser.add_argument('--data_path', type=str, help='原始数据路径 (例如: data/user_behavior.csv)')
@@ -281,6 +343,8 @@ def main():
     parser.add_argument('--resume', action='store_true', help='从最新的检查点恢复训练')
     parser.add_argument('--no_train', action='store_true', help='跳过训练，直接使用已有模型 (与evaluate/visualize模式结合)')
     parser.add_argument('--experiment_name', type=str, help='自定义实验名称 (默认为config.py中的EXPERIMENT_NAME)')
+    parser.add_argument('--no_cache', action='store_true', help='禁用随机游走缓存')
+    parser.add_argument('--force_regenerate', action='store_true', help='强制重新生成随机游走（忽略缓存）')
     
     args = parser.parse_args()
     
@@ -298,12 +362,26 @@ def main():
         Config.DATA_PATH = args.data_path
         print(f"使用命令行指定的数据路径: {Config.DATA_PATH}")
 
-    print(f"\nItem2Vec用户表示向量训练项目")
+    # 处理缓存相关参数
+    if args.no_cache:
+        Config.USE_WALKS_CACHE = False
+        print("已禁用随机游走缓存")
+    
+    if args.force_regenerate:
+        Config.FORCE_REGENERATE_WALKS = True
+        print("将强制重新生成随机游走（忽略缓存）")
+
+    print(f"\nItem2Vec/Node2Vec用户表示向量训练项目")
     print(f"实验名称 (Config): {Config.EXPERIMENT_NAME}")
     # 使用 get_experiment_dir() 来获取缓存的/最终确定的路径进行显示
     print(f"实际实验目录: {get_experiment_dir(Config.EXPERIMENT_NAME)}") 
     print(f"运行模式: {args.mode}")
     print(f"设备: {Config.DEVICE_OBJ}") # 使用DEVICE_OBJ
+    print(f"模型类型 (来自Config): {Config.MODEL_TYPE}")
+    if Config.MODEL_TYPE == "node2vec":
+        print(f"Node2Vec 缓存: {'启用' if Config.USE_WALKS_CACHE else '禁用'}")
+        if Config.USE_WALKS_CACHE and Config.FORCE_REGENERATE_WALKS:
+            print("缓存模式: 强制重新生成")
     print("="*50)
     
     user_sequences = None
@@ -331,13 +409,30 @@ def main():
         if user_sequences is None or url_mappings is None:
             print("数据未加载，无法开始训练。请先运行 preprocess 模式。")
             return
-        model, trainer = train_model(user_sequences, url_mappings, args.resume)
+        
+        if Config.MODEL_TYPE == 'item2vec':
+            model, trainer = train_model(user_sequences, url_mappings, args.resume)
+        elif Config.MODEL_TYPE == 'node2vec':
+            model, trainer = train_node2vec_model(user_sequences, url_mappings, args.resume)
+            if model is None: # 如果Node2Vec训练中途失败（例如图构建或游走生成失败）
+                print("Node2Vec模型训练失败，程序退出。")
+                return
+        else:
+            print(f"未知的模型类型 (来自Config): {Config.MODEL_TYPE}")
+            return
     
     # 加载已训练的模型 (如果需要)
     # 确保从正确的MODEL_SAVE_PATH加载
     if (args.no_train and args.mode in ['train', 'all']) or args.mode in ['evaluate', 'visualize', 'compute_embeddings']:
         if model is None: # 避免重复加载
-            model_load_path = args.model_path or os.path.join(Config.MODEL_SAVE_PATH, 'item2vec_model.pth')
+            model_save_subdir = Config.MODEL_SAVE_PATH # 路径现在由Config动态确定
+            
+            # 根据模型类型确定模型文件名
+            model_filename = 'item2vec_model.pth' if Config.MODEL_TYPE == 'item2vec' else 'node2vec_model.pth'
+            user_embeddings_filename = 'user_embeddings.pkl' if Config.MODEL_TYPE == 'item2vec' else 'user_embeddings_node2vec.pkl'
+
+            model_load_path = args.model_path or os.path.join(model_save_subdir, model_filename)
+            
             if url_mappings is None: # 评估、可视化或计算嵌入时可能需要先加载映射
                 print("URL mappings 未加载，尝试从预处理数据中获取...")
                 _, url_mappings_temp = preprocess_data() # 再次调用以获取映射
@@ -354,8 +449,28 @@ def main():
             if vocab_size == 0 and args.mode not in ['train']: # 再次检查
                 print("词汇表大小为0，无法加载模型。")
                 return
-                
-            model = load_trained_model(model_load_path, vocab_size)
+            
+            # 修改: 根据模型类型加载不同的模型
+            if Config.MODEL_TYPE == 'item2vec':
+                model = load_trained_model(model_load_path, vocab_size) # load_trained_model 内部使用 Item2Vec
+            elif Config.MODEL_TYPE == 'node2vec':
+                # 需要一个类似load_trained_model的函数来加载Node2Vec，或者修改load_trained_model使其通用
+                # 暂时简单处理，假设Node2Vec模型保存和Item2Vec一样
+                # 注意: 实际应用中，可能需要确保加载的是正确的模型类型
+                temp_node2vec_model = Node2Vec(vocab_size, Config.EMBEDDING_DIM)
+                if os.path.exists(model_load_path):
+                    torch.serialization.add_safe_globals([Config])
+                    checkpoint = torch.load(model_load_path, map_location=Config.DEVICE_OBJ, weights_only=True)
+                    temp_node2vec_model.load_state_dict(checkpoint['model_state_dict'])
+                    model = temp_node2vec_model
+                    print(f"已加载训练好的Node2Vec模型: {model_load_path}")
+                else:
+                    print(f"Node2Vec模型文件不存在: {model_load_path}")
+                    model = None
+            else:
+                print(f"加载模型时遇到未知模型类型 (来自Config): {Config.MODEL_TYPE}")
+                return
+
             if model is None:
                 print(f"无法从 {model_load_path} 加载模型，程序退出")
                 return
@@ -377,7 +492,8 @@ def main():
     # 计算用户嵌入 (通常在'all'模式或者需要最终嵌入时运行)
     # 现在也为 'compute_embeddings' 模式启用
     if args.mode in ['all', 'compute_embeddings'] and model is not None and user_sequences is not None and url_mappings is not None:
-        user_embeddings_path = os.path.join(Config.MODEL_SAVE_PATH, 'user_embeddings.pkl')
+        user_embeddings_filename = 'user_embeddings.pkl' if Config.MODEL_TYPE == 'item2vec' else 'user_embeddings_node2vec.pkl'
+        user_embeddings_path = os.path.join(Config.MODEL_SAVE_PATH, user_embeddings_filename)
         compute_user_embeddings(model, user_sequences, url_mappings, user_embeddings_path)
     elif args.mode == 'compute_embeddings': # 如果是compute_embeddings模式但条件未满足，给出提示
         print("模型、用户序列或URL映射未准备好，无法计算用户嵌入。请确保：")
