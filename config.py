@@ -58,7 +58,7 @@ class Config:
     包含所有模型训练和评估的参数
     """
     # 实验配置
-    EXPERIMENT_NAME = "node2vec"
+    EXPERIMENT_NAME = "test_attribute"
     
     # 基础路径配置
     BASE_DIR = BASE_DIR
@@ -67,14 +67,24 @@ class Config:
     
     # 数据相关配置
     DATA_PATH = "data/edu.csv"
+    ATTRIBUTE_DATA_PATH = "data/user_attributes.tsv"  # 用户属性数据路径
     
-    # 模型相关配置
-    MODEL_TYPE = "node2vec"  # 可选 "item2vec" 或 "node2vec"
+    # 行为向量相关配置
+    MODEL_TYPE = "item2vec"  # 可选 "item2vec" 或 "node2vec"
     EMBEDDING_DIM = 128
     WINDOW_SIZE = 5
     MIN_COUNT = 5
     NEGATIVE_SAMPLES = 5
     
+    # 属性向量相关配置
+    ENABLE_ATTRIBUTES = False  # 是否启用属性向量训练
+    ATTRIBUTE_EMBEDDING_DIM = 64  # 属性嵌入维度
+    FUSION_HIDDEN_DIM = 256  # 融合层隐藏维度
+    FINAL_USER_EMBEDDING_DIM = 256  # 最终用户嵌入维度
+    
+    # 数值属性处理配置
+    NUMERICAL_STANDARDIZATION = True  # 是否对数值属性进行标准化
+    CATEGORICAL_MIN_FREQ = 5  # 类别属性最小频次（低频类别会被归为'其他'）
     
     # Node2Vec specific parameters
     P_PARAM = 1.0  # Return parameter
@@ -87,22 +97,21 @@ class Config:
     USE_WALKS_CACHE = True  # 是否使用随机游走缓存
     FORCE_REGENERATE_WALKS = False  # 是否强制重新生成随机游走（忽略缓存）
     
-    # 训练相关配置
+    # 行为训练相关配置
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     LEARNING_RATE = 0.001
-    EPOCHS = 8
+    EPOCHS = 2
     BATCH_SIZE = 4096
     RANDOM_SEED = 42
     NUM_WORKERS = 0  # DataLoader的num_workers, Windows默认为0, Linux可尝试 os.cpu_count() // 2
     PIN_MEMORY = True if DEVICE == "cuda" else False # DataLoader的pin_memory
-    
-    # 评估相关配置
-    EARLY_STOPPING_PATIENCE = 2
-    EVAL_INTERVAL = 2
-    TOP_K = 10
+
+    # 属性训练相关配置
+    ATTRIBUTE_LEARNING_RATE = 0.001  # 属性训练学习率
+    ATTRIBUTE_EPOCHS = 50  # 属性训练轮次
+    ATTRIBUTE_BATCH_SIZE = 512  # 属性训练批次大小
+    MASKING_RATIO = 0.15  # 掩码比例
+    ATTRIBUTE_EARLY_STOPPING_PATIENCE = 10  # 属性训练早停耐心值
     
     # 可视化相关配置
     CLUSTER_NUM = 10
-    
-    # 随机种子
-    

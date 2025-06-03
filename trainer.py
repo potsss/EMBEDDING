@@ -1,9 +1,11 @@
 """
 模型训练器
 包括模型训练、早停策略、训练曲线、断点保存和加载等功能
+包含属性训练器
 """
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import os
@@ -14,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 import random
 from collections import Counter
 from config import Config
-from model import Item2Vec, Node2Vec
+from model import Item2Vec, Node2Vec, AttributeEmbeddingModel, UserFusionModel, MaskedAttributePredictionModel
 
 class SkipGramDataset(Dataset):
     """
@@ -220,6 +222,539 @@ class EarlyStopping:
                 self.early_stop = True
         if self.verbose:
             print(f"早停检查: {self.counter}/{self.patience}")
+
+class AttributeDataset(Dataset):
+    """
+    属性训练数据集
+    用于掩码属性预测任务
+    """
+    def __init__(self, user_sequences, user_attributes, attribute_info, behavior_model, 
+                 url_mappings, masking_ratio=0.15, config=Config):
+        self.user_sequences = user_sequences
+        self.user_attributes = user_attributes
+        self.attribute_info = attribute_info
+        self.behavior_model = behavior_model
+        self.url_mappings = url_mappings
+        self.masking_ratio = masking_ratio
+        self.config = config
+        
+        # 预计算行为嵌入
+        self.behavior_embeddings = self._precompute_behavior_embeddings()
+        
+        # 筛选有行为和属性数据的用户
+        self.valid_users = [
+            user_id for user_id in self.behavior_embeddings.keys() 
+            if user_id in self.user_attributes
+        ]
+        
+        print(f"有效用户数量（同时有行为和属性数据）: {len(self.valid_users)}")
+    
+    def _precompute_behavior_embeddings(self):
+        """预计算用户行为嵌入"""
+        from model import UserEmbedding
+        user_embedding_calculator = UserEmbedding(
+            self.behavior_model, self.user_sequences, self.url_mappings
+        )
+        return user_embedding_calculator.compute_user_embeddings()
+    
+    def __len__(self):
+        return len(self.valid_users)
+    
+    def __getitem__(self, idx):
+        user_id = self.valid_users[idx]
+        
+        # 获取用户行为嵌入
+        behavior_embedding = torch.tensor(self.behavior_embeddings[user_id], dtype=torch.float32)
+        
+        # 获取用户属性
+        user_attrs = self.user_attributes[user_id].copy()
+        
+        # 随机选择要掩码的属性
+        all_attrs = list(user_attrs.keys())
+        num_to_mask = max(1, int(len(all_attrs) * self.masking_ratio))
+        masked_attrs = random.sample(all_attrs, num_to_mask)
+        
+        # 准备输入数据（掩码版本）
+        categorical_inputs = {}
+        numerical_values = []
+        masked_categorical_inputs = {}
+        masked_numerical_values = []
+        
+        # 真实标签
+        categorical_targets = {}
+        numerical_targets = {}
+        
+        categorical_attrs = [attr for attr in all_attrs 
+                           if self.attribute_info[attr]['type'] == 'categorical']
+        numerical_attrs = [attr for attr in all_attrs 
+                         if self.attribute_info[attr]['type'] == 'numerical']
+        
+        # 处理类别型属性
+        for attr_name in categorical_attrs:
+            original_value = user_attrs[attr_name]
+            if attr_name in masked_attrs:
+                # 掩码该属性（用0代替，假设0是特殊的掩码token）
+                masked_categorical_inputs[attr_name] = torch.tensor(0, dtype=torch.long)
+                categorical_targets[attr_name] = torch.tensor(original_value, dtype=torch.long)
+            else:
+                categorical_inputs[attr_name] = torch.tensor(original_value, dtype=torch.long)
+        
+        # 处理数值型属性
+        for attr_name in numerical_attrs:
+            original_value = user_attrs[attr_name]
+            if attr_name in masked_attrs:
+                # 掩码该属性（用0代替）
+                masked_numerical_values.append(0.0)
+                numerical_targets[attr_name] = torch.tensor(original_value, dtype=torch.float32)
+            else:
+                numerical_values.append(original_value)
+        
+        # 合并掩码和非掩码输入
+        all_categorical_inputs = {**categorical_inputs, **masked_categorical_inputs}
+        all_numerical_values = numerical_values + masked_numerical_values
+        
+        return {
+            'user_id': user_id,
+            'behavior_embedding': behavior_embedding,
+            'categorical_inputs': all_categorical_inputs,
+            'numerical_inputs': torch.tensor(all_numerical_values, dtype=torch.float32) if all_numerical_values else None,
+            'masked_attrs': masked_attrs,
+            'categorical_targets': categorical_targets,
+            'numerical_targets': numerical_targets
+        }
+
+class AttributeTrainer:
+    """
+    属性训练器
+    用于训练属性嵌入和融合模型
+    """
+    def __init__(self, behavior_model, user_sequences, user_attributes, attribute_info, 
+                 url_mappings, config=Config):
+        self.behavior_model = behavior_model
+        self.user_sequences = user_sequences
+        self.user_attributes = user_attributes
+        self.attribute_info = attribute_info
+        self.url_mappings = url_mappings
+        self.config = config
+        self.device = config.DEVICE_OBJ
+        
+        # 创建属性模型
+        self.attribute_model = AttributeEmbeddingModel(attribute_info, config).to(self.device)
+        
+        # 创建融合模型
+        behavior_dim = config.EMBEDDING_DIM  # 行为嵌入维度
+        attribute_dim = config.ATTRIBUTE_EMBEDDING_DIM  # 属性嵌入维度
+        self.fusion_model = UserFusionModel(behavior_dim, attribute_dim, config).to(self.device)
+        
+        # 创建掩码预测模型
+        self.prediction_model = MaskedAttributePredictionModel(
+            self.attribute_model, self.fusion_model, attribute_info, config
+        ).to(self.device)
+        
+        # 优化器
+        self.optimizer = torch.optim.Adam(
+            list(self.attribute_model.parameters()) + 
+            list(self.fusion_model.parameters()) + 
+            list(self.prediction_model.parameters()),
+            lr=config.ATTRIBUTE_LEARNING_RATE
+        )
+        
+        # 学习率调度器
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.5, patience=5, verbose=True
+        )
+        
+        # 早停机制
+        self.early_stopping = EarlyStopping(
+            patience=config.ATTRIBUTE_EARLY_STOPPING_PATIENCE,
+            min_delta=0.001,
+            verbose=True
+        )
+        
+        # TensorBoard
+        tensorboard_dir = os.path.join(config.TENSORBOARD_DIR, 'attribute_training')
+        os.makedirs(tensorboard_dir, exist_ok=True)
+        self.writer = SummaryWriter(tensorboard_dir)
+        
+        # 训练状态
+        self.train_losses = []
+        self.val_losses = []
+        
+        print(f"属性训练器初始化完成:")
+        print(f"  属性数量: {len(attribute_info)}")
+        print(f"  类别型属性: {[attr for attr, info in attribute_info.items() if info['type'] == 'categorical']}")
+        print(f"  数值型属性: {[attr for attr, info in attribute_info.items() if info['type'] == 'numerical']}")
+    
+    def create_dataloader(self):
+        """创建数据加载器"""
+        dataset = AttributeDataset(
+            self.user_sequences, self.user_attributes, self.attribute_info,
+            self.behavior_model, self.url_mappings, self.config.MASKING_RATIO, self.config
+        )
+        
+        # 分割训练和验证集
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+        
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.ATTRIBUTE_BATCH_SIZE,
+            shuffle=True,
+            collate_fn=self._collate_fn,
+            num_workers=0,  # 属性训练通常数据量不会太大，设为0避免问题
+            pin_memory=self.config.PIN_MEMORY
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.ATTRIBUTE_BATCH_SIZE,
+            shuffle=False,
+            collate_fn=self._collate_fn,
+            num_workers=0,
+            pin_memory=self.config.PIN_MEMORY
+        )
+        
+        return train_loader, val_loader
+    
+    def _collate_fn(self, batch):
+        """自定义批次整理函数"""
+        batch_size = len(batch)
+        
+        # 收集行为嵌入
+        behavior_embeddings = torch.stack([item['behavior_embedding'] for item in batch])
+        
+        # 收集所有属性名
+        all_categorical_attrs = set()
+        all_numerical_attrs = []
+        
+        for item in batch:
+            all_categorical_attrs.update(item['categorical_inputs'].keys())
+            if item['numerical_inputs'] is not None:
+                if not all_numerical_attrs:  # 初始化
+                    all_numerical_attrs = list(range(len(item['numerical_inputs'])))
+        
+        # 整理类别型输入
+        batch_categorical_inputs = {}
+        for attr_name in all_categorical_attrs:
+            attr_values = []
+            for item in batch:
+                if attr_name in item['categorical_inputs']:
+                    attr_values.append(item['categorical_inputs'][attr_name])
+                else:
+                    attr_values.append(torch.tensor(0, dtype=torch.long))  # 默认掩码值
+            batch_categorical_inputs[attr_name] = torch.stack(attr_values)
+        
+        # 整理数值型输入
+        batch_numerical_inputs = None
+        if all_numerical_attrs:
+            numerical_matrix = []
+            for item in batch:
+                if item['numerical_inputs'] is not None:
+                    numerical_matrix.append(item['numerical_inputs'])
+                else:
+                    numerical_matrix.append(torch.zeros(len(all_numerical_attrs), dtype=torch.float32))
+            batch_numerical_inputs = torch.stack(numerical_matrix)
+        
+        # 收集目标和掩码信息
+        masked_attrs_list = [item['masked_attrs'] for item in batch]
+        categorical_targets = {}
+        numerical_targets = {}
+        
+        # 整理目标
+        all_target_attrs = set()
+        for item in batch:
+            all_target_attrs.update(item['categorical_targets'].keys())
+            all_target_attrs.update(item['numerical_targets'].keys())
+        
+        for attr_name in all_target_attrs:
+            if any(attr_name in item['categorical_targets'] for item in batch):
+                targets = []
+                for item in batch:
+                    if attr_name in item['categorical_targets']:
+                        targets.append(item['categorical_targets'][attr_name])
+                    else:
+                        targets.append(torch.tensor(-1, dtype=torch.long))  # 忽略标记
+                categorical_targets[attr_name] = torch.stack(targets)
+            
+            if any(attr_name in item['numerical_targets'] for item in batch):
+                targets = []
+                for item in batch:
+                    if attr_name in item['numerical_targets']:
+                        targets.append(item['numerical_targets'][attr_name])
+                    else:
+                        targets.append(torch.tensor(0.0, dtype=torch.float32))  # 忽略标记
+                numerical_targets[attr_name] = torch.stack(targets)
+        
+        return {
+            'behavior_embeddings': behavior_embeddings,
+            'categorical_inputs': batch_categorical_inputs,
+            'numerical_inputs': batch_numerical_inputs,
+            'masked_attrs_list': masked_attrs_list,
+            'categorical_targets': categorical_targets,
+            'numerical_targets': numerical_targets
+        }
+    
+    def train_epoch(self, train_loader):
+        """训练一个epoch"""
+        self.attribute_model.train()
+        self.fusion_model.train()
+        self.prediction_model.train()
+        
+        total_loss = 0
+        num_batches = 0
+        
+        progress_bar = tqdm(train_loader, desc="属性训练中")
+        for batch in progress_bar:
+            # 移动数据到设备
+            behavior_embeddings = batch['behavior_embeddings'].to(self.device)
+            
+            categorical_inputs = {}
+            for attr_name, attr_tensor in batch['categorical_inputs'].items():
+                categorical_inputs[attr_name] = attr_tensor.to(self.device)
+            
+            numerical_inputs = batch['numerical_inputs'].to(self.device) if batch['numerical_inputs'] is not None else None
+            
+            # 收集所有被掩码的属性
+            all_masked_attrs = set()
+            for masked_attrs in batch['masked_attrs_list']:
+                all_masked_attrs.update(masked_attrs)
+            
+            # 前向传播
+            predictions = self.prediction_model(
+                behavior_embeddings, categorical_inputs, numerical_inputs, list(all_masked_attrs)
+            )
+            
+            # 计算损失
+            total_batch_loss = 0
+            loss_count = 0
+            
+            # 类别型属性损失
+            for attr_name, targets in batch['categorical_targets'].items():
+                if attr_name in predictions:
+                    targets = targets.to(self.device)
+                    pred = predictions[attr_name]
+                    
+                    # 只计算非忽略位置的损失
+                    mask = targets != -1
+                    if mask.sum() > 0:
+                        loss = F.cross_entropy(pred[mask], targets[mask])
+                        total_batch_loss += loss
+                        loss_count += 1
+            
+            # 数值型属性损失
+            for attr_name, targets in batch['numerical_targets'].items():
+                if attr_name in predictions:
+                    targets = targets.to(self.device).unsqueeze(-1)
+                    pred = predictions[attr_name]
+                    
+                    # 只计算非零位置的损失（假设0是忽略标记）
+                    mask = targets != 0
+                    if mask.sum() > 0:
+                        loss = F.mse_loss(pred[mask], targets[mask])
+                        total_batch_loss += loss
+                        loss_count += 1
+            
+            if loss_count > 0:
+                avg_batch_loss = total_batch_loss / loss_count
+            else:
+                avg_batch_loss = torch.tensor(0.0, requires_grad=True)
+            
+            # 反向传播
+            self.optimizer.zero_grad()
+            avg_batch_loss.backward()
+            self.optimizer.step()
+            
+            total_loss += avg_batch_loss.item()
+            num_batches += 1
+            
+            progress_bar.set_postfix({'loss': avg_batch_loss.item()})
+        
+        return total_loss / num_batches if num_batches > 0 else 0
+    
+    def validate(self, val_loader):
+        """验证模型"""
+        self.attribute_model.eval()
+        self.fusion_model.eval()
+        self.prediction_model.eval()
+        
+        total_loss = 0
+        num_batches = 0
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                # 移动数据到设备
+                behavior_embeddings = batch['behavior_embeddings'].to(self.device)
+                
+                categorical_inputs = {}
+                for attr_name, attr_tensor in batch['categorical_inputs'].items():
+                    categorical_inputs[attr_name] = attr_tensor.to(self.device)
+                
+                numerical_inputs = batch['numerical_inputs'].to(self.device) if batch['numerical_inputs'] is not None else None
+                
+                # 收集所有被掩码的属性
+                all_masked_attrs = set()
+                for masked_attrs in batch['masked_attrs_list']:
+                    all_masked_attrs.update(masked_attrs)
+                
+                # 前向传播
+                predictions = self.prediction_model(
+                    behavior_embeddings, categorical_inputs, numerical_inputs, list(all_masked_attrs)
+                )
+                
+                # 计算损失
+                total_batch_loss = 0
+                loss_count = 0
+                
+                # 类别型属性损失
+                for attr_name, targets in batch['categorical_targets'].items():
+                    if attr_name in predictions:
+                        targets = targets.to(self.device)
+                        pred = predictions[attr_name]
+                        
+                        mask = targets != -1
+                        if mask.sum() > 0:
+                            loss = F.cross_entropy(pred[mask], targets[mask])
+                            total_batch_loss += loss
+                            loss_count += 1
+                
+                # 数值型属性损失
+                for attr_name, targets in batch['numerical_targets'].items():
+                    if attr_name in predictions:
+                        targets = targets.to(self.device).unsqueeze(-1)
+                        pred = predictions[attr_name]
+                        
+                        mask = targets != 0
+                        if mask.sum() > 0:
+                            loss = F.mse_loss(pred[mask], targets[mask])
+                            total_batch_loss += loss
+                            loss_count += 1
+                
+                if loss_count > 0:
+                    avg_batch_loss = total_batch_loss / loss_count
+                    total_loss += avg_batch_loss.item()
+                    num_batches += 1
+        
+        return total_loss / num_batches if num_batches > 0 else 0
+    
+    def train(self):
+        """完整的属性训练流程"""
+        print("开始属性训练...")
+        
+        # 创建数据加载器
+        train_loader, val_loader = self.create_dataloader()
+        
+        best_loss = float('inf')
+        best_epoch = -1
+        
+        for epoch in range(self.config.ATTRIBUTE_EPOCHS):
+            print(f"\nAttribute Epoch {epoch+1}/{self.config.ATTRIBUTE_EPOCHS}")
+            
+            # 训练
+            train_loss = self.train_epoch(train_loader)
+            self.train_losses.append(train_loss)
+            
+            # 验证
+            val_loss = self.validate(val_loader)
+            self.val_losses.append(val_loss)
+            
+            print(f"属性训练损失: {train_loss:.4f}, 属性验证损失: {val_loss:.4f}")
+            
+            # TensorBoard记录
+            self.writer.add_scalar('AttributeLoss/Train', train_loss, epoch)
+            self.writer.add_scalar('AttributeLoss/Validation', val_loss, epoch)
+            self.writer.add_scalar('AttributeLearningRate', self.optimizer.param_groups[0]['lr'], epoch)
+            
+            # 保存最佳模型
+            if val_loss < best_loss:
+                best_loss = val_loss
+                best_epoch = epoch
+                self.save_models(is_best=True)
+            
+            # 学习率调度
+            self.scheduler.step(val_loss)
+            
+            # 早停检查
+            self.early_stopping(val_loss)
+            if self.early_stopping.early_stop:
+                print("属性训练早停触发")
+                break
+        
+        # 训练完成后再次保存最佳模型，确保模型一定被保存
+        print(f"属性训练完成！最佳验证损失: {best_loss:.4f} (epoch {best_epoch+1})")
+        self.save_models(is_best=True)
+        
+        # 绘制训练曲线
+        self.plot_training_curves()
+        
+        # 关闭TensorBoard
+        self.writer.close()
+    
+    def save_models(self, is_best=False):
+        """保存属性模型"""
+        os.makedirs(self.config.MODEL_SAVE_PATH, exist_ok=True)
+        
+        models_dict = {
+            'attribute_model_state_dict': self.attribute_model.state_dict(),
+            'fusion_model_state_dict': self.fusion_model.state_dict(),
+            'prediction_model_state_dict': self.prediction_model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'attribute_info': self.attribute_info,
+            'config_dict': {
+                'ATTRIBUTE_EMBEDDING_DIM': self.config.ATTRIBUTE_EMBEDDING_DIM,
+                'FUSION_HIDDEN_DIM': self.config.FUSION_HIDDEN_DIM,
+                'FINAL_USER_EMBEDDING_DIM': self.config.FINAL_USER_EMBEDDING_DIM
+            }
+        }
+        
+        # 保存模型
+        model_path = os.path.join(self.config.MODEL_SAVE_PATH, 'attribute_models.pth')
+        torch.save(models_dict, model_path)
+        
+        if is_best:
+            best_path = os.path.join(self.config.MODEL_SAVE_PATH, 'best_attribute_models.pth')
+            torch.save(models_dict, best_path)
+        
+        print(f"属性模型已保存到: {model_path}")
+    
+    def plot_training_curves(self):
+        """绘制属性训练曲线"""
+        plt.figure(figsize=(10, 4))
+        
+        plt.subplot(1, 2, 1)
+        plt.plot(self.train_losses, label='属性训练损失')
+        plt.plot(self.val_losses, label='属性验证损失')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('属性训练损失')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        
+        # 保存图片
+        save_path = os.path.join(self.config.LOG_DIR, 'attribute_training_curves.png')
+        plt.savefig(save_path)
+        plt.show()
+        
+        print(f"属性训练曲线已保存到: {save_path}")
+
+def load_attribute_models(model_path, attribute_info, config=Config):
+    """
+    加载训练好的属性模型
+    """
+    checkpoint = torch.load(model_path, map_location=config.DEVICE_OBJ)
+    
+    # 重建模型
+    attribute_model = AttributeEmbeddingModel(attribute_info, config)
+    attribute_model.load_state_dict(checkpoint['attribute_model_state_dict'])
+    
+    behavior_dim = config.EMBEDDING_DIM
+    attribute_dim = config.ATTRIBUTE_EMBEDDING_DIM
+    fusion_model = UserFusionModel(behavior_dim, attribute_dim, config)
+    fusion_model.load_state_dict(checkpoint['fusion_model_state_dict'])
+    
+    return attribute_model, fusion_model
 
 class Trainer:
     """

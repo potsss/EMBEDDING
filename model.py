@@ -2,6 +2,7 @@
 Item2Vec模型定义
 基于PyTorch实现的Word2Vec模型，用于训练URL的向量表示
 优化版本：改进负采样和初始化策略
+包含用户属性嵌入和融合模型
 """
 import torch
 import torch.nn as nn
@@ -342,6 +343,286 @@ class UserEmbedding:
                 user_ids.append(uid)
         
         # 排序并返回top_k
+        sorted_indices = np.argsort(similarities)[::-1][:top_k]
+        similar_users = [user_ids[i] for i in sorted_indices]
+        similar_scores = [similarities[i] for i in sorted_indices]
+        
+        return similar_users, similar_scores 
+
+class AttributeEmbeddingModel(nn.Module):
+    """
+    用户属性嵌入模型
+    处理类别型和数值型属性，生成属性表示向量
+    """
+    def __init__(self, attribute_info, config=Config):
+        super(AttributeEmbeddingModel, self).__init__()
+        self.attribute_info = attribute_info
+        self.config = config
+        
+        # 为每个类别型属性创建嵌入层
+        self.categorical_embeddings = nn.ModuleDict()
+        self.categorical_attrs = []
+        self.numerical_attrs = []
+        
+        for attr_name, attr_info in attribute_info.items():
+            if attr_info['type'] == 'categorical':
+                vocab_size = attr_info['vocab_size']
+                embedding_layer = nn.Embedding(vocab_size, config.ATTRIBUTE_EMBEDDING_DIM)
+                self.categorical_embeddings[attr_name] = embedding_layer
+                self.categorical_attrs.append(attr_name)
+            else:
+                self.numerical_attrs.append(attr_name)
+        
+        # 计算输出维度
+        self.categorical_output_dim = len(self.categorical_attrs) * config.ATTRIBUTE_EMBEDDING_DIM
+        self.numerical_output_dim = len(self.numerical_attrs)
+        self.total_output_dim = self.categorical_output_dim + self.numerical_output_dim
+        
+        # 属性融合层（可选）
+        if self.total_output_dim > 0:
+            self.fusion_layer = nn.Sequential(
+                nn.Linear(self.total_output_dim, config.FUSION_HIDDEN_DIM),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(config.FUSION_HIDDEN_DIM, config.ATTRIBUTE_EMBEDDING_DIM)
+            )
+        
+        self.init_weights()
+    
+    def init_weights(self):
+        """初始化权重"""
+        for embedding in self.categorical_embeddings.values():
+            nn.init.xavier_uniform_(embedding.weight)
+        
+        if hasattr(self, 'fusion_layer'):
+            for layer in self.fusion_layer:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight)
+                    nn.init.constant_(layer.bias, 0)
+    
+    def forward(self, categorical_inputs, numerical_inputs):
+        """
+        前向传播
+        Args:
+            categorical_inputs: dict {attr_name: tensor}
+            numerical_inputs: tensor [batch_size, num_numerical_attrs]
+        """
+        embeddings = []
+        
+        # 处理类别型属性
+        for attr_name in self.categorical_attrs:
+            if attr_name in categorical_inputs:
+                attr_input = categorical_inputs[attr_name]
+                attr_embedding = self.categorical_embeddings[attr_name](attr_input)
+                embeddings.append(attr_embedding)
+        
+        # 处理数值型属性
+        if len(self.numerical_attrs) > 0 and numerical_inputs is not None:
+            embeddings.append(numerical_inputs)
+        
+        if not embeddings:
+            return None
+        
+        # 拼接所有属性嵌入
+        combined_embedding = torch.cat(embeddings, dim=-1)
+        
+        # 通过融合层
+        if hasattr(self, 'fusion_layer'):
+            return self.fusion_layer(combined_embedding)
+        else:
+            return combined_embedding
+
+class UserFusionModel(nn.Module):
+    """
+    用户行为向量和属性向量融合模型
+    """
+    def __init__(self, behavior_dim, attribute_dim, config=Config):
+        super(UserFusionModel, self).__init__()
+        self.behavior_dim = behavior_dim
+        self.attribute_dim = attribute_dim
+        self.config = config
+        
+        # 融合层
+        input_dim = behavior_dim + attribute_dim
+        self.fusion_layers = nn.Sequential(
+            nn.Linear(input_dim, config.FUSION_HIDDEN_DIM),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(config.FUSION_HIDDEN_DIM, config.FUSION_HIDDEN_DIM // 2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(config.FUSION_HIDDEN_DIM // 2, config.FINAL_USER_EMBEDDING_DIM)
+        )
+        
+        self.init_weights()
+    
+    def init_weights(self):
+        """初始化权重"""
+        for layer in self.fusion_layers:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.constant_(layer.bias, 0)
+    
+    def forward(self, behavior_embeddings, attribute_embeddings):
+        """
+        融合行为嵌入和属性嵌入
+        Args:
+            behavior_embeddings: [batch_size, behavior_dim]
+            attribute_embeddings: [batch_size, attribute_dim]
+        """
+        # 拼接两种嵌入
+        combined = torch.cat([behavior_embeddings, attribute_embeddings], dim=-1)
+        
+        # 通过融合网络
+        fused_embedding = self.fusion_layers(combined)
+        
+        # L2归一化
+        fused_embedding = F.normalize(fused_embedding, p=2, dim=-1)
+        
+        return fused_embedding
+
+class MaskedAttributePredictionModel(nn.Module):
+    """
+    掩码属性预测模型
+    用于训练属性嵌入的自监督任务
+    """
+    def __init__(self, attribute_embedding_model, user_fusion_model, attribute_info, config=Config):
+        super(MaskedAttributePredictionModel, self).__init__()
+        self.attribute_embedding_model = attribute_embedding_model
+        self.user_fusion_model = user_fusion_model
+        self.attribute_info = attribute_info
+        self.config = config
+        
+        # 为每个属性创建预测头
+        self.prediction_heads = nn.ModuleDict()
+        
+        for attr_name, attr_info in attribute_info.items():
+            if attr_info['type'] == 'categorical':
+                # 分类预测头
+                self.prediction_heads[attr_name] = nn.Linear(
+                    config.FINAL_USER_EMBEDDING_DIM, 
+                    attr_info['vocab_size']
+                )
+            else:
+                # 回归预测头
+                self.prediction_heads[attr_name] = nn.Linear(
+                    config.FINAL_USER_EMBEDDING_DIM, 
+                    1
+                )
+        
+        self.init_weights()
+    
+    def init_weights(self):
+        """初始化权重"""
+        for head in self.prediction_heads.values():
+            nn.init.xavier_uniform_(head.weight)
+            nn.init.constant_(head.bias, 0)
+    
+    def forward(self, behavior_embeddings, categorical_inputs, numerical_inputs, masked_attrs):
+        """
+        前向传播
+        Args:
+            behavior_embeddings: 用户行为嵌入
+            categorical_inputs: 类别属性输入（可能包含掩码）
+            numerical_inputs: 数值属性输入（可能包含掩码）
+            masked_attrs: 被掩码的属性列表
+        """
+        # 获取属性嵌入（使用掩码后的输入）
+        attribute_embeddings = self.attribute_embedding_model(categorical_inputs, numerical_inputs)
+        
+        # 融合行为和属性嵌入
+        fused_embeddings = self.user_fusion_model(behavior_embeddings, attribute_embeddings)
+        
+        # 预测被掩码的属性
+        predictions = {}
+        for attr_name in masked_attrs:
+            if attr_name in self.prediction_heads:
+                predictions[attr_name] = self.prediction_heads[attr_name](fused_embeddings)
+        
+        return predictions
+
+class EnhancedUserEmbedding:
+    """
+    增强的用户嵌入类
+    结合行为向量和属性向量
+    """
+    def __init__(self, behavior_model, attribute_model, fusion_model, user_sequences, 
+                 user_attributes, url_mappings, attribute_info):
+        self.behavior_model = behavior_model
+        self.attribute_model = attribute_model
+        self.fusion_model = fusion_model
+        self.user_sequences = user_sequences
+        self.user_attributes = user_attributes
+        self.url_mappings = url_mappings
+        self.attribute_info = attribute_info
+        self.enhanced_user_embeddings = {}
+    
+    def compute_enhanced_user_embeddings(self):
+        """
+        计算增强的用户嵌入（行为+属性）
+        """
+        # 获取行为嵌入
+        basic_user_embedding = UserEmbedding(
+            self.behavior_model, self.user_sequences, self.url_mappings
+        )
+        behavior_embeddings = basic_user_embedding.compute_user_embeddings()
+        
+        # 为所有用户计算增强嵌入
+        self.enhanced_user_embeddings = {}
+        
+        for user_id in behavior_embeddings.keys():
+            if user_id not in self.user_attributes:
+                # 如果用户没有属性数据，只使用行为嵌入
+                self.enhanced_user_embeddings[user_id] = behavior_embeddings[user_id]
+                continue
+            
+            # 获取用户属性
+            user_attrs = self.user_attributes[user_id]
+            
+            # 准备属性输入
+            categorical_inputs = {}
+            numerical_values = []
+            
+            for attr_name, attr_value in user_attrs.items():
+                if self.attribute_info[attr_name]['type'] == 'categorical':
+                    categorical_inputs[attr_name] = torch.tensor([attr_value], dtype=torch.long)
+                else:
+                    numerical_values.append(attr_value)
+            
+            numerical_inputs = torch.tensor([numerical_values], dtype=torch.float32) if numerical_values else None
+            
+            # 计算属性嵌入
+            with torch.no_grad():
+                attribute_embedding = self.attribute_model(categorical_inputs, numerical_inputs)
+                
+                if attribute_embedding is not None:
+                    # 融合行为和属性嵌入
+                    behavior_tensor = torch.tensor([behavior_embeddings[user_id]], dtype=torch.float32)
+                    fused_embedding = self.fusion_model(behavior_tensor, attribute_embedding)
+                    self.enhanced_user_embeddings[user_id] = fused_embedding.squeeze().cpu().numpy()
+                else:
+                    # 如果属性嵌入失败，使用行为嵌入
+                    self.enhanced_user_embeddings[user_id] = behavior_embeddings[user_id]
+        
+        return self.enhanced_user_embeddings
+    
+    def get_similar_users(self, user_id, top_k=10):
+        """
+        获取相似用户（基于增强嵌入）
+        """
+        if user_id not in self.enhanced_user_embeddings:
+            return [], []
+        
+        target_embed = self.enhanced_user_embeddings[user_id]
+        similarities = []
+        user_ids = []
+        
+        for uid, embed in self.enhanced_user_embeddings.items():
+            if uid != user_id:
+                similarity = np.dot(target_embed, embed)
+                similarities.append(similarity)
+                user_ids.append(uid)
+        
         sorted_indices = np.argsort(similarities)[::-1][:top_k]
         similar_users = [user_ids[i] for i in sorted_indices]
         similar_scores = [similarities[i] for i in sorted_indices]
