@@ -139,7 +139,6 @@ python main.py --mode all --data_path data/your_data.csv
 # 分步骤运行（属性训练会在行为模型训练完成后自动进行）
 python main.py --mode preprocess --data_path data/your_data.csv --enable_attributes --attribute_data_path data/user_attributes.tsv
 python main.py --mode train 
-python main.py --mode evaluate
 python main.py --mode visualize
 python main.py --mode compute_embeddings
 ```
@@ -252,13 +251,7 @@ RANDOM_SEED = 42
 - 训练和验证损失曲线可视化并保存 (`plot_training_curves`)
 - 学习率调度 (`ReduceLROnPlateau`)
 
-### 评估器 (`evaluator.py`)
 
-- 推荐性能评估（Hit Rate@K, NDCG@K）
-- 物品相似度评估（平均/标准差/最小/最大相似度）
-- 用户间相似度评估（平均/标准差/最小/最大相似度）
-- 嵌入向量质量评估（平均/标准差范数，平均/标准差向量间距离）
-- 可以采用其他的方式来对生成结果进行评估，这个评估方法在数据量较大时，计算量会非常大，需要根据实际情况选择。
 
 ### 可视化器 (`visualizer.py`)
 
@@ -407,15 +400,6 @@ else:
 4. **检查点**: 支持断点续训，保存最佳模型。
 5. **负采样**: Skip-gram模型训练时使用负采样提高效率。
 
-## 评估指标
-
-项目通过 `evaluator.py` 计算以下几类指标：
-
-- **推荐性能**: Hit Rate@K, NDCG@K
-- **物品相似度质量**: 物品嵌入间平均/标准差/最小/最大余弦相似度
-- **用户聚类质量 (用户间相似度)**: 用户嵌入间平均/标准差/最小/最大余弦相似度
-- **嵌入质量**: 物品嵌入向量的平均/标准差范数，平均/标准差向量间距离
-
 ## 注意事项
 
 1. 确保输入数据格式正确（TSV格式，包含`user_id`, `url`, `timestamp_str`, `weight`字段）。
@@ -432,7 +416,7 @@ else:
     - 减小 `EMBEDDING_DIM`。
 2. **训练缓慢**:
     - 确认 `Config.DEVICE` 是否已正确设置为 `cuda` 并且PyTorch能够访问到GPU。
-    - 尝试调整 `LEARNING_RATE`。
+
 3. **`FileNotFoundError`**:
     - 检查 `config.py` 中的 `DATA_PATH` 或命令行传入的 `--data_path` 是否正确。
     - 确保在分步执行时，前一步骤已成功生成所需文件（例如，`train` 模式需要预处理后的数据）。
@@ -445,7 +429,7 @@ else:
 1. **使用小数据集测试**: 截取原始数据的一小部分进行测试，以便快速定位问题。
 2. **打印日志和变量**: 在关键步骤添加 `print` 语句，检查中间变量的状态。
 3. **使用TensorBoard**: 运行 `tensorboard --logdir experiments/{EXPERIMENT_NAME}/runs` 来监控训练过程中的损失和学习率。
-4. **逐步执行**: 使用 `main.py` 的分步模式 (`preprocess`, `train`, `evaluate` 等) 来隔离问题。
+4. **逐步执行**: 使用 `main.py` 的分步模式 (`preprocess`, `train` 等) 来隔离问题。
 5. **检查配置文件**: 仔细核对 `config.py` 中的各项参数设置。
 
 ## 扩展功能
