@@ -148,13 +148,12 @@ python main.py --mode compute_embeddings
 - `--mode`: 运行模式
   - `preprocess`: 仅数据预处理
   - `train`: 仅模型训练
-  - `evaluate`: 仅模型评估
   - `visualize`: 仅结果可视化
   - `compute_embeddings`: 仅计算并保存用户嵌入向量
   - `all`: 完整流程（默认）
 
 - `--data_path`: 原始数据文件路径 (主要用于 `preprocess` 模式，或 `all` 模式首次运行时)
-- `--model_path`: 指定已训练模型的路径 (用于 `evaluate`, `visualize`, `compute_embeddings` 模式，如果不想使用默认实验路径下的模型)
+- `--model_path`: 指定已训练模型的路径 (用于`visualize`, `compute_embeddings` 模式，如果不想使用默认实验路径下的模型)
 - `--resume`: 从最新的检查点恢复训练 (用于 `train` 模式)
 - `--no_train`: 在 `train` 或 `all` 模式中跳过训练，直接使用已有模型 (需要模型已存在或通过 `--model_path` 指定)
 - `--experiment_name`: 自定义实验名称。如果提供，则结果会保存在 `experiments/YOUR_CUSTOM_NAME` 或 `experiments/YOUR_CUSTOM_NAME_TIMESTAMP` 下。
