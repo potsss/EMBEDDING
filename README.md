@@ -1,26 +1,36 @@
-# Item2Vec用户表示向量训练项目
+# 多模态用户表示向量训练项目
 
-这是一个基于Item2Vec模型的用户表示向量训练项目，使用PyTorch实现，用于从用户行为数据中学习用户和物品的向量表示。**新增了用户属性向量训练功能，支持多模态用户表示学习。**
+这是一个基于多模态学习的用户表示向量训练项目，使用PyTorch实现，支持从用户行为数据、位置数据和属性数据中学习用户的综合向量表示。**项目支持三种向量训练：行为向量、位置向量和属性向量，并通过多模态融合生成最终的用户表示。**
 
 ## 项目概述
 
-本项目的目标是训练一个用户表示向量，用于表示用户的兴趣偏好。主要特点：
+本项目采用分阶段训练策略，实现多模态用户表示学习。主要特点：
 
-- 使用Item2Vec模型训练URL的向量表示
-- （新增）支持Node2Vec模型，通过构建物品交互图并生成随机游走来学习物品的向量表示
-- **（新增）支持用户属性向量训练，通过掩码属性预测任务学习属性嵌入**
-- **（新增）支持行为向量和属性向量的融合，生成增强的用户表示**
-- 用户的表示向量是用户访问的URL向量表示的加权平均（或其他聚合方式）
+### 三种向量训练
+- **行为向量训练**：使用Item2Vec/Node2Vec模型从用户访问行为中学习兴趣表示
+- **位置向量训练**：基于用户基站连接数据学习位置偏好表示
+- **属性向量训练**：通过掩码属性预测任务学习用户属性嵌入
+
+### 多模态融合
+- **独立训练策略**：三种向量独立训练，避免模态间的相互干扰
+- **多模态融合**：将三种向量融合成最终的用户表示向量
+- **灵活配置**：支持单独使用任一模态或组合使用多个模态
+
+### 技术特性
 - 基于PyTorch实现，支持GPU加速
 - 包含完整的数据预处理、模型训练、评估和可视化流程
+- 支持无阻塞运行，图片自动保存
+- 支持断点续训和早停策略
 
 ## 数据格式
 
 ### 行为数据
-输入数据应为TSV格式，包含以下字段：
+用户行为数据应为TSV格式，包含以下字段：
 
 ```
 user_id	url	timestamp_str	weight
+user1	example.com	2023-01-01	1.5
+user2	github.com	2023-01-02	2.0
 ```
 
 - `user_id`: 用户ID
@@ -28,13 +38,39 @@ user_id	url	timestamp_str	weight
 - `timestamp_str`: 访问时间戳 (字符串格式，如 "YYYY-MM-DD")
 - `weight`: 访问权重（权重越大表示用户对该URL的兴趣越大）
 
-### 属性数据（新增）
+### 位置数据（新增）
+用户基站连接数据应为TSV格式，包含以下字段：
+
+```
+user_id	base_station_id	timestamp_str	duration
+user1	BS_001	2023-01-01 08:00:00	1800
+user2	BS_002	2023-01-01 09:00:00	2400
+```
+
+- `user_id`: 用户ID，与行为数据中的用户ID对应
+- `base_station_id`: 基站ID
+- `timestamp_str`: 连接时间戳
+- `duration`: 连接持续时间（秒）
+
+### 基站特征数据（新增）
+基站特征数据应为TSV格式，包含以下字段：
+
+```
+base_station_id	name
+BS_001	市中心商业区基站
+BS_002	居民区基站
+```
+
+- `base_station_id`: 基站ID
+- `name`: 基站名称或描述
+
+### 属性数据
 用户属性数据应为TSV格式，每行代表一个用户，每列代表一个属性：
 
 ```
-user_id	age	gender	occupation	city	...
-user1	25	男	工程师	北京	...
-user2	30	女	教师	上海	...
+user_id	age	gender	occupation	city	income_level	education_level	device_type
+user1	25	男	工程师	北京	中等	本科	Android
+user2	30	女	教师	上海	中等	硕士	iOS
 ```
 
 - 第一列必须是`user_id`，与行为数据中的用户ID对应
@@ -48,44 +84,49 @@ user2	30	女	教师	上海	...
 ├── requirements.txt          # 依赖包列表
 ├── config.py                # 配置文件
 ├── main.py                  # 主程序入口
-├── data_preprocessing.py    # 数据预处理模块（包含属性数据处理）
-├── model.py                 # 模型定义（包含属性嵌入和融合模型）
-├── trainer.py               # 训练器（包含属性训练器）
+├── data_preprocessing.py    # 数据预处理模块（包含三种数据处理）
+├── model.py                 # 模型定义（包含三种嵌入模型和融合模型）
+├── trainer.py               # 训练器（包含三种向量训练器）
 ├── visualizer.py            # 可视化模块
-├── utils.py                 # 工具函数 (例如: create_sample_data)
 ├── data/                    # 原始数据目录
-│   ├── user_behavior.csv    # 用户行为数据
-│   └── user_attributes.tsv  # 用户属性数据（新增）
-├── node2vec_utils.py        # Node2Vec图构建和随机游走工具
+│   ├── test_user_behavior.csv           # 用户行为数据（示例）
+│   ├── sample_user_attributes.tsv       # 用户属性数据（示例）
+│   ├── sample_user_base_stations.tsv    # 用户基站连接数据（示例）
+│   └── sample_base_station_features.tsv # 基站特征数据（示例）
 ├── utils/                   # 工具文件夹
 │   ├── __init__.py
 │   ├── utils.py             # 通用工具函数
 │   └── node2vec_utils.py    # Node2Vec相关工具函数
 └── experiments/             # 实验结果的根目录
-    └── {EXPERIMENT_NAME}/    # 单次实验的目录 (例如: experiments/edu_20230101_120000)
+    └── {EXPERIMENT_NAME}/    # 单次实验的目录
         ├── processed_data/   # 处理后的数据
-        │   ├── url_mappings.pkl        # URL映射
-        │   ├── user_sequences.pkl      # 用户序列
-        │   ├── user_attributes.pkl     # 处理后的属性数据（新增）
-        │   ├── attribute_info.pkl      # 属性信息（新增）
-        │   └── attribute_encoders.pkl  # 属性编码器（新增）
+        │   ├── url_mappings.pkl            # URL映射
+        │   ├── user_sequences.pkl          # 用户序列
+        │   ├── user_attributes.pkl         # 处理后的属性数据
+        │   ├── attribute_info.pkl          # 属性信息
+        │   ├── attribute_encoders.pkl      # 属性编码器
+        │   ├── location_sequences.pkl      # 位置序列数据（新增）
+        │   ├── base_station_mappings.pkl   # 基站映射（新增）
+        │   ├── location_weights.pkl        # 位置权重（新增）
+        │   └── base_station_features.pkl   # 基站特征（新增）
         ├── models/           # 保存的模型
-        │   ├── item2vec_model.pth          # Item2Vec模型
-        │   ├── node2vec_model.pth          # Node2Vec模型
-        │   ├── attribute_models.pth        # 属性模型（新增）
-        │   ├── best_attribute_models.pth   # 最佳属性模型（新增）
+        │   ├── node2vec_model.pth          # Node2Vec行为模型
+        │   ├── item2vec_model.pth          # Item2Vec位置模型
+        │   ├── attribute_models.pth        # 属性模型
+        │   ├── best_attribute_models.pth   # 最佳属性模型
         │   ├── user_embeddings.pkl        # 基础用户嵌入
-        │   └── enhanced_user_embeddings_*.pkl # 增强用户嵌入（新增）
+        │   └── enhanced_user_embeddings_*.pkl # 增强用户嵌入（三种向量融合）
         ├── checkpoints/      # 训练检查点
         ├── logs/             # 日志文件
         │   ├── training_curves.png         # 行为模型训练曲线
-        │   └── attribute_training_curves.png # 属性训练曲线（新增）
+        │   └── attribute_training_curves.png # 属性训练曲线
         ├── runs/             # TensorBoard日志
-        │   └── attribute_training/         # 属性训练日志（新增）
+        │   └── attribute_training/         # 属性训练日志
         ├── visualizations/   # 可视化结果
+        │   ├── 用户嵌入向量_t-sne_可视化.png
+        │   └── 物品嵌入向量_t-sne_可视化.png
         └── experiment_config.json # 本次实验的配置快照
 ```
-*注意: `{EXPERIMENT_NAME}` 会根据 `config.py` 中的 `EXPERIMENT_NAME` 以及是否已存在同名目录（可能添加时间戳）动态生成。*
 
 ## 安装依赖
 
@@ -97,49 +138,65 @@ pip install -r requirements.txt
 
 ### 1. 准备数据
 
-将用户行为数据放在 `data/` 目录下，例如 `data/your_data.csv`。确保数据格式符合要求。
+将数据文件放在 `data/` 目录下：
 
-**如果要使用属性向量功能**，还需要准备用户属性数据文件，例如 `data/user_attributes.tsv`。
+- **行为数据**：`data/test_user_behavior.csv`
+- **位置数据**：`data/sample_user_base_stations.tsv`
+- **基站特征**：`data/sample_base_station_features.tsv`
+- **属性数据**：`data/sample_user_attributes.tsv`
 
-如果需要示例数据，可以运行 (假设 `utils.py` 中有 `create_sample_data` 函数):
-```python
-# (在Python解释器或脚本中)
-# from utils.utils import create_sample_data # 修改导入路径
-# create_sample_data("data/sample_user_behavior.csv")
-```
+项目已提供示例数据文件，可以直接使用进行测试。
 
 ### 2. 运行流程
 
-#### 基础流程（仅行为向量）
+#### 完整多模态训练流程（推荐）
 
 ```bash
-# 运行完整流程（数据预处理 + 训练 + 评估 + 可视化 + 计算嵌入）
-# 模型类型在 config.py 中设置 (Config.MODEL_TYPE)
-python main.py --mode all --data_path data/your_data.csv
+# 运行完整的三种向量训练流程
+python main.py --mode all
 
-# 例如，如果要在 config.py 中使用 Node2Vec，请先修改该文件
-# 然后运行:
-# python main.py --mode all --data_path data/your_data.csv
-
-# 指定实验名称 (可选, 否则使用config.py中的默认名称)
-# python main.py --mode all --data_path data/your_data.csv --experiment_name my_custom_experiment
+# 这个命令会依次执行：
+# 1. 数据预处理（行为、位置、属性数据）
+# 2. 行为向量训练（Node2Vec）
+# 3. 位置向量训练（Item2Vec）
+# 4. 属性向量训练（掩码属性预测）
+# 5. 多模态融合（生成最终用户表示）
+# 6. 可视化结果
 ```
 
-#### 增强流程（行为向量 + 属性向量）
+#### 分步骤运行
 
 ```bash
-# 启用属性向量训练的完整流程
-python main.py --mode all --data_path data/your_data.csv \
-    --enable_attributes --attribute_data_path data/user_attributes.tsv
+# 1. 数据预处理
+python main.py --mode preprocess
 
-# 或者在 config.py 中设置 ENABLE_ATTRIBUTES = True，然后运行：
-python main.py --mode all --data_path data/your_data.csv
+# 2. 模型训练
+python main.py --mode train
 
-# 分步骤运行（属性训练会在行为模型训练完成后自动进行）
-python main.py --mode preprocess --data_path data/your_data.csv --enable_attributes --attribute_data_path data/user_attributes.tsv
-python main.py --mode train 
+# 3. 可视化
 python main.py --mode visualize
+
+# 4. 计算最终嵌入
 python main.py --mode compute_embeddings
+```
+
+#### 仅使用单一模态
+
+```bash
+# 仅使用行为向量（在config.py中设置）
+# ENABLE_ATTRIBUTES = False
+# ENABLE_LOCATION = False
+python main.py --mode all
+
+# 仅使用行为+属性向量
+# ENABLE_ATTRIBUTES = True
+# ENABLE_LOCATION = False
+python main.py --mode all
+
+# 仅使用行为+位置向量
+# ENABLE_ATTRIBUTES = False  
+# ENABLE_LOCATION = True
+python main.py --mode all
 ```
 
 ### 3. 命令行参数
@@ -151,15 +208,13 @@ python main.py --mode compute_embeddings
   - `compute_embeddings`: 仅计算并保存用户嵌入向量
   - `all`: 完整流程（默认）
 
-- `--data_path`: 原始数据文件路径 (主要用于 `preprocess` 模式，或 `all` 模式首次运行时)
-- `--model_path`: 指定已训练模型的路径 (用于`visualize`, `compute_embeddings` 模式，如果不想使用默认实验路径下的模型)
-- `--resume`: 从最新的检查点恢复训练 (用于 `train` 模式)
-- `--no_train`: 在 `train` 或 `all` 模式中跳过训练，直接使用已有模型 (需要模型已存在或通过 `--model_path` 指定)
-- `--experiment_name`: 自定义实验名称。如果提供，则结果会保存在 `experiments/YOUR_CUSTOM_NAME` 或 `experiments/YOUR_CUSTOM_NAME_TIMESTAMP` 下。
+- `--data_path`: 原始数据文件路径
+- `--model_path`: 指定已训练模型的路径
+- `--resume`: 从最新的检查点恢复训练
+- `--no_train`: 跳过训练，直接使用已有模型
+- `--experiment_name`: 自定义实验名称
 - `--no_cache`: 禁用随机游走缓存
-- `--force_regenerate`: 强制重新生成随机游走（忽略缓存）
-- **`--enable_attributes`**: 启用属性向量训练（新增）
-- **`--attribute_data_path`**: 用户属性数据文件路径（新增）
+- `--force_regenerate`: 强制重新生成随机游走
 
 ### 4. 配置参数
 
@@ -167,51 +222,60 @@ python main.py --mode compute_embeddings
 
 ```python
 # 实验配置
-EXPERIMENT_NAME = "edu"   # 默认实验名称
+EXPERIMENT_NAME = "three_vector_test"   # 实验名称
 
 # 数据相关配置
-DATA_PATH = "data/edu.csv" # 默认原始数据路径 (会被命令行参数覆盖)
-ATTRIBUTE_DATA_PATH = "data/user_attributes.tsv" # 用户属性数据路径（新增）
+DATA_PATH = "data/test_user_behavior.csv"
+ATTRIBUTE_DATA_PATH = "data/sample_user_attributes.tsv"
+LOCATION_DATA_PATH = "data/sample_user_base_stations.tsv"      # 位置数据路径
+LOCATION_FEATURES_PATH = "data/sample_base_station_features.tsv"  # 基站特征路径
 
-# 模型相关配置
-MODEL_TYPE = "item2vec"   # 或 "node2vec"，在此处修改模型类型
-EMBEDDING_DIM = 128        # 嵌入维度
-WINDOW_SIZE = 5           # 上下文窗口大小 (Item2Vec 和 Node2Vec SkipGram)
-MIN_COUNT = 5             # 用户序列最小长度 (用于data_preprocessing.py)
-NEGATIVE_SAMPLES = 5      # 负采样数量 (Item2Vec 和 Node2Vec SkipGram)
+# 行为向量相关配置
+MODEL_TYPE = "node2vec"        # 可选 "item2vec" 或 "node2vec"
+EMBEDDING_DIM = 128           # 行为嵌入维度
+WINDOW_SIZE = 5               # 上下文窗口大小
+MIN_COUNT = 5                 # 最小计数阈值
+NEGATIVE_SAMPLES = 5          # 负采样数量
 
-# 属性相关配置（新增）
-ENABLE_ATTRIBUTES = False  # 是否启用属性向量训练
+# 位置向量相关配置（新增）
+ENABLE_LOCATION = True        # 启用位置向量
+LOCATION_EMBEDDING_DIM = 128  # 位置嵌入维度
+LOCATION_MIN_CONNECTIONS = 2  # 用户最少需要连接的基站数量
+BASE_STATION_FEATURE_MODE = "none"  # 基站特征模式："none" 或 "text_embedding"
+
+# 位置模型训练参数
+LOCATION_LEARNING_RATE = 0.001
+LOCATION_EPOCHS = 10
+LOCATION_MODEL_TYPE = "item2vec"
+LOCATION_WINDOW_SIZE = 5
+LOCATION_NEGATIVE_SAMPLES = 5
+LOCATION_MIN_COUNT = 1
+LOCATION_BATCH_SIZE = 64
+
+# 属性向量相关配置
+ENABLE_ATTRIBUTES = True      # 启用属性向量
 ATTRIBUTE_EMBEDDING_DIM = 64  # 属性嵌入维度
-FUSION_HIDDEN_DIM = 256  # 融合层隐藏维度
+FUSION_HIDDEN_DIM = 256      # 融合层隐藏维度
 FINAL_USER_EMBEDDING_DIM = 256  # 最终用户嵌入维度
 
-# 属性训练相关配置（新增）
-ATTRIBUTE_LEARNING_RATE = 0.001  # 属性训练学习率
-ATTRIBUTE_EPOCHS = 50  # 属性训练轮次
-ATTRIBUTE_BATCH_SIZE = 512  # 属性训练批次大小
-MASKING_RATIO = 0.15  # 掩码比例
-ATTRIBUTE_EARLY_STOPPING_PATIENCE = 10  # 属性训练早停耐心值
+# 属性训练相关配置
+ATTRIBUTE_LEARNING_RATE = 0.001
+ATTRIBUTE_EPOCHS = 8
+ATTRIBUTE_BATCH_SIZE = 512
+MASKING_RATIO = 0.15         # 掩码比例
+ATTRIBUTE_EARLY_STOPPING_PATIENCE = 10
 
-# 数值属性处理配置（新增）
-NUMERICAL_STANDARDIZATION = True  # 是否对数值属性进行标准化
-CATEGORICAL_MIN_FREQ = 5  # 类别属性最小频次（低频类别会被归为'其他'）
-
-# Node2Vec 特定参数 (config.py)
-P_PARAM = 1.0             # Node2Vec 返回参数 p
-Q_PARAM = 1.0             # Node2Vec 进出参数 q
-WALK_LENGTH = 80          # Node2Vec 随机游走长度
-NUM_WALKS = 10            # Node2Vec 每个节点的游走次数
+# Node2Vec 特定参数
+P_PARAM = 1.0                # 返回参数 p
+Q_PARAM = 1.0                # 进出参数 q
+WALK_LENGTH = 20             # 随机游走长度
+NUM_WALKS = 4                # 每个节点的游走次数
 
 # 训练参数
-LEARNING_RATE = 0.001     # 学习率
-EPOCHS = 100              # 训练轮次
-BATCH_SIZE = 1024         # 批次大小
-EARLY_STOPPING_PATIENCE = 50  # 早停耐心值 (trainer.py中实际是10, config.py中是50, 以config.py为准)
-
-# 评估相关配置
-EVAL_INTERVAL = 2         # 验证和保存模型的epoch间隔
-TOP_K = 10                # 推荐评估时的Top K
+LEARNING_RATE = 0.001
+EPOCHS = 10                  # 训练轮次（已减少用于快速测试）
+BATCH_SIZE = 1024
+EARLY_STOPPING_PATIENCE = 10
 
 # 随机种子
 RANDOM_SEED = 42
@@ -221,224 +285,197 @@ RANDOM_SEED = 42
 
 ### 数据预处理 (`data_preprocessing.py`)
 
-- 数据清洗：删除缺失值、重复行，处理无效权重
+#### DataPreprocessor
+- 行为数据清洗：删除缺失值、重复行，处理无效权重
 - URL处理：提取domain，创建ID映射
-- 序列构建：根据权重和时间戳构建用户访问序列，并按最小长度过滤
+- 序列构建：根据权重和时间戳构建用户访问序列
 
-### Node2Vec 工具 (`utils/node2vec_utils.py`)
+#### LocationProcessor（新增）
+- 基站连接数据处理：解析用户基站连接记录
+- 基站特征处理：支持文本嵌入或简单ID映射
+- 位置序列生成：为位置向量训练准备数据
 
-- `build_graph_from_sequences`: 从用户行为序列构建物品-物品交互图。
-- `generate_node2vec_walks`: 在构建的图上根据 p 和 q 参数生成带偏向的随机游走序列。
-- 生成随机游走图会比较花时间，可以控制超参数 `NUM_WALKS` 和 `WALK_LENGTH` 来减少时间。
-
-### 通用工具 (`utils/utils.py`)
-
-- 包含日志设置、文件读写、示例数据生成等多种辅助函数。
+#### AttributeProcessor
+- 属性类型识别：自动识别类别型和数值型属性
+- 属性编码：类别型属性编码，数值型属性标准化
+- 属性预处理：为属性向量训练准备数据
 
 ### 模型定义 (`model.py`)
 
-- `Item2Vec`: 基于Skip-gram的物品嵌入模型，实现负采样损失，直接在用户序列上训练。
-- `Node2Vec`: 同样基于Skip-gram的物品嵌入模型，但在`utils.node2vec_utils.py`生成的随机游走序列上训练。
-- `UserEmbedding`: 用户嵌入计算类，支持多种聚合策略（默认为均值聚合）。
+#### 行为向量模型
+- `Item2Vec`: 基于Skip-gram的物品嵌入模型
+- `Node2Vec`: 基于图随机游走的物品嵌入模型
+- `UserEmbedding`: 用户行为嵌入计算类
+
+#### 位置向量模型（新增）
+- `UserLocationEmbedding`: 用户位置嵌入计算模块
+- 支持基于基站连接的位置表示学习
+- 支持基站特征融合（可选）
+
+#### 属性向量模型
+- `AttributeEmbeddingModel`: 用户属性嵌入模型
+- `MaskedAttributePredictionModel`: 掩码属性预测模型
+- 支持类别型和数值型属性处理
+
+#### 多模态融合模型
+- `UserFusionModel`: 用户多模态融合模型
+- `EnhancedUserEmbedding`: 增强用户嵌入计算类
+- 支持三种向量的灵活融合
 
 ### 训练器 (`trainer.py`)
 
-- 支持早停策略 (`EarlyStopping`)
-- 自动保存最新和最佳检查点 (`save_checkpoint`)
-- TensorBoard日志记录训练/验证损失和学习率
-- 训练和验证损失曲线可视化并保存 (`plot_training_curves`)
-- 学习率调度 (`ReduceLROnPlateau`)
+#### 通用训练器
+- `Trainer`: 基础训练器，支持Item2Vec和Node2Vec
+- `EarlyStopping`: 早停策略
+- `train_location_model`: 位置模型训练函数
 
+#### 属性训练器
+- `AttributeTrainer`: 属性模型训练器
+- `AttributeDataset`: 属性训练数据集
+- 支持多模态融合训练
 
+#### 训练特性
+- 支持断点续训和最佳模型保存
+- TensorBoard日志记录
+- 训练曲线自动保存（无阻塞）
+- 学习率调度
 
 ### 可视化器 (`visualizer.py`)
 
 - 用户嵌入向量 t-SNE 可视化
 - 物品嵌入向量 t-SNE 可视化
-- 只是直观展示一下结果，可以采用其他的方式来评估，这个步骤同样可以不执行。
+- 自动保存可视化结果，无需手动关闭
+
+### Node2Vec 工具 (`utils/node2vec_utils.py`)
+
+- `build_graph_from_sequences`: 构建物品交互图
+- `generate_node2vec_walks`: 生成随机游走序列
+- 支持缓存机制，提高训练效率
+
+## 训练流程
+
+### 1. 独立训练阶段
+```
+行为数据 → 行为向量训练 → 固定行为嵌入
+位置数据 → 位置向量训练 → 固定位置嵌入  
+属性数据 → 属性向量训练 → 固定属性嵌入
+```
+
+### 2. 多模态融合阶段
+```
+行为嵌入 + 位置嵌入 + 属性嵌入 → 融合网络 → 最终用户表示
+```
+
+### 3. 输出结果
+```
+用户ID → 256维最终用户嵌入向量
+```
 
 ## 输出结果
 
-所有输出默认保存在 `experiments/{EXPERIMENT_NAME}/` 目录下 (如果指定了实验名或使用了带时间戳的目录)。
+### 1. 模型文件
+- `node2vec_model.pth`: 行为向量模型（约12KB）
+- `item2vec_model.pth`: 位置向量模型（约10KB）
+- `attribute_models.pth`: 属性向量模型（约3.4MB）
+- `enhanced_user_embeddings_node2vec.pkl`: 最终用户嵌入
 
-### 1. 模型与数据文件
-- `experiments/{EXPERIMENT_NAME}/models/item2vec_model.pth`: 训练好的Item2Vec模型参数。
-- `experiments/{EXPERIMENT_NAME}/models/node2vec_model.pth`: 训练好的Node2Vec模型参数。
-- `experiments/{EXPERIMENT_NAME}/models/attribute_models.pth`: 训练好的属性模型参数（新增）。
-- `experiments/{EXPERIMENT_NAME}/models/best_attribute_models.pth`: 最佳属性模型参数（新增）。
-- `experiments/{EXPERIMENT_NAME}/models/user_embeddings.pkl`: 基于Item2Vec计算出的用户嵌入向量。
-- `experiments/{EXPERIMENT_NAME}/models/user_embeddings_node2vec.pkl`: 基于Node2Vec计算出的用户嵌入向量。
-- `experiments/{EXPERIMENT_NAME}/models/enhanced_user_embeddings_*.pkl`: 增强用户嵌入向量（行为+属性）（新增）。
-- `experiments/{EXPERIMENT_NAME}/processed_data/url_mappings.pkl`: URL到ID的映射。
-- `experiments/{EXPERIMENT_NAME}/processed_data/user_sequences.pkl`: 处理后的用户行为序列。
-- `experiments/{EXPERIMENT_NAME}/processed_data/user_attributes.pkl`: 处理后的用户属性数据（新增）。
-- `experiments/{EXPERIMENT_NAME}/processed_data/attribute_info.pkl`: 属性信息（新增）。
-- `experiments/{EXPERIMENT_NAME}/processed_data/attribute_encoders.pkl`: 属性编码器（新增）。
-- `experiments/{EXPERIMENT_NAME}/checkpoints/latest_checkpoint.pth`: 最新训练检查点。
-- `experiments/{EXPERIMENT_NAME}/checkpoints/best_model.pth`: 验证集上表现最佳的模型检查点。
+### 2. 数据文件
+- `location_sequences.pkl`: 位置序列数据
+- `base_station_mappings.pkl`: 基站映射
+- `location_weights.pkl`: 位置权重
+- `user_attributes.pkl`: 处理后的属性数据
+- `attribute_info.pkl`: 属性信息
 
-### 2. 可视化结果
-- `experiments/{EXPERIMENT_NAME}/visualizations/`:
-  - `user_embedding_tsne_visualization.png`: 用户嵌入t-SNE图。
-  - `item_embedding_tsne_visualization.png`: 物品嵌入t-SNE图。
-- `experiments/{EXPERIMENT_NAME}/logs/training_curves.png`: 训练和验证损失曲线图。
-- `experiments/{EXPERIMENT_NAME}/logs/attribute_training_curves.png`: 属性训练损失曲线图（新增）。
+### 3. 可视化结果
+- `用户嵌入向量_t-sne_可视化.png`: 用户嵌入t-SNE图
+- `物品嵌入向量_t-sne_可视化.png`: 物品嵌入t-SNE图
+- `training_curves.png`: 训练曲线图
+- `attribute_training_curves.png`: 属性训练曲线图
 
-### 3. 日志与配置
-- `experiments/{EXPERIMENT_NAME}/runs/`: TensorBoard日志，用于更详细的训练过程监控。
-- `experiments/{EXPERIMENT_NAME}/runs/attribute_training/`: 属性训练TensorBoard日志（新增）。
-- `experiments/{EXPERIMENT_NAME}/experiment_config.json`: 本次实验运行时的详细配置信息。
+### 4. 日志与配置
+- `experiments/{EXPERIMENT_NAME}/runs/`: TensorBoard日志
+- `experiment_config.json`: 实验配置快照
 
 ## 使用示例
 
-### 训练模型并获取用户嵌入
+### 基础使用
 
-#### 基础用户嵌入（仅行为数据）
-
-```python
-# 确保在项目根目录下，并且相关模块可以导入
-# 以下代码片段假设在 main.py 的上下文中或已正确设置环境
-
-# 假设已通过 main.py 的 'preprocess' 或 'all' 模式生成了数据
-# from main import preprocess_data, train_model, compute_user_embeddings, initialize_experiment_paths, create_directories
-# from config import Config
-# import os
-
-# # 0. 初始化路径 (实际项目中这由main函数在开始时处理)
-# initialize_experiment_paths() # 使用默认实验名
-# create_directories() # 创建目录
-
-# # 1. 数据预处理 (如果尚未处理)
-# # user_sequences, url_mappings = preprocess_data(Config.DATA_PATH)
-# # print("数据预处理完成。")
-
-# # 2. 加载已处理数据 (如果已处理过)
-# from data_preprocessing import DataPreprocessor
-# preprocessor = DataPreprocessor()
-# user_sequences = preprocessor.load_processed_data()
-# url_mappings = {'url_to_id': preprocessor.url_to_id, 'id_to_url': preprocessor.id_to_url}
-# print("已加载处理数据。")
-
-# # 3. 训练模型并计算用户嵌入
-# user_embeddings_filename = 'user_embeddings.pkl' if Config.MODEL_TYPE == 'item2vec' else 'user_embeddings_node2vec.pkl'
-# user_embeddings_path = os.path.join(Config.MODEL_SAVE_PATH, user_embeddings_filename)
-# compute_user_embeddings(model, user_sequences, url_mappings, user_embeddings_path)
+```bash
+# 运行完整的多模态训练流程
+python main.py --mode all
 ```
 
-#### 增强用户嵌入（行为数据 + 属性数据）
+### 程序化使用
 
 ```python
-# 启用属性功能
-# Config.ENABLE_ATTRIBUTES = True
+from main import preprocess_data, train_node2vec_model, compute_enhanced_user_embeddings
+from config import Config
 
-# # 1. 处理属性数据
-# user_sequences, url_mappings, user_attributes, attribute_info = preprocess_data(Config.DATA_PATH)
+# 1. 数据预处理
+user_sequences, url_mappings, user_attributes, attribute_info, \
+user_location_sequences, base_station_mappings, location_weights = preprocess_data()
 
-# # 2. 训练行为模型
-# if Config.MODEL_TYPE == 'item2vec':
-#     model, trainer = train_model(user_sequences, url_mappings)
-# elif Config.MODEL_TYPE == 'node2vec':
-#     model, trainer = train_node2vec_model(user_sequences, url_mappings)
+# 2. 训练行为模型
+behavior_model, trainer = train_node2vec_model(user_sequences, url_mappings)
 
-# # 3. 训练属性模型
-# attribute_model, fusion_model = train_attribute_models(
-#     model, user_sequences, user_attributes, attribute_info, url_mappings
-# )
-
-# # 4. 计算增强用户嵌入
-# enhanced_embeddings_filename = f'enhanced_user_embeddings_{Config.MODEL_TYPE}.pkl'
-# enhanced_embeddings_path = os.path.join(Config.MODEL_SAVE_PATH, enhanced_embeddings_filename)
-# enhanced_embeddings = compute_enhanced_user_embeddings(
-#     model, attribute_model, fusion_model, user_sequences, user_attributes, 
-#     url_mappings, attribute_info, enhanced_embeddings_path
-# )
+# 3. 计算最终用户嵌入
+enhanced_embeddings = compute_enhanced_user_embeddings(
+    behavior_model, attribute_model, fusion_model, 
+    user_sequences, user_attributes, url_mappings, attribute_info,
+    location_model, user_location_sequences, base_station_mappings, location_weights
+)
 ```
-
-### 获取物品推荐 (相似物品)
-
-```python
-# 假设 `loaded_model` 是已加载的 Item2Vec 模型
-# `url_mappings` 包含 'id_to_url'
-
-# 假设物品ID 0 存在
-target_item_id = 0
-if target_item_id < loaded_model.vocab_size:
-    similar_items_indices, scores = loaded_model.get_similar_items(item_id=target_item_id, top_k=10)
-
-    print(f"与物品ID {target_item_id} ({url_mappings['id_to_url'].get(target_item_id, '未知物品')}) 最相似的物品:")
-    for item_idx, score in zip(similar_items_indices, scores):
-        domain = url_mappings['id_to_url'].get(item_idx, '未知物品')
-        print(f"  物品ID {item_idx} ({domain}): {score:.4f}")
-else:
-    print(f"物品ID {target_item_id} 超出词汇表范围。")
-```
-
-### 可视化结果
-
-```python
-# 假设 `loaded_model`, `user_sequences`, `url_mappings` 已准备好
-# from visualizer import Visualizer
-# from config import Config # Visualizer 会使用Config中的路径
-
-# visualizer = Visualizer(loaded_model, user_sequences, url_mappings, Config)
-
-# # 可视化物品嵌入 (使用默认参数)
-# visualizer.visualize_item_embeddings(sample_size=500) # 可以指定采样大小等参数
-
-# # 可视化用户嵌入 (使用默认参数)
-# visualizer.visualize_user_embeddings(sample_size=500)
-```
-*可视化通常在 `main.py` 的 `visualize` 或 `all` 模式下自动执行。*
 
 ## 性能优化
 
-1. **GPU加速**: 自动检测并使用GPU (`Config.DEVICE`)。
-2. **批处理**: 使用 `DataLoader` 进行批处理训练。
-3. **早停**: 防止过拟合，基于验证集损失 (`EarlyStopping`)。
-4. **检查点**: 支持断点续训，保存最佳模型。
-5. **负采样**: Skip-gram模型训练时使用负采样提高效率。
+1. **GPU加速**: 自动检测并使用GPU
+2. **批处理**: 使用DataLoader进行批处理训练
+3. **早停**: 基于验证集损失防止过拟合
+4. **检查点**: 支持断点续训，保存最佳模型
+5. **负采样**: Skip-gram模型使用负采样提高效率
+6. **缓存机制**: Node2Vec随机游走支持缓存
+7. **无阻塞运行**: 图片自动保存，无需手动关闭
+
+## 实验结果示例
+
+基于项目提供的示例数据：
+- **数据规模**: 5个用户，10个域名，8个基站，7个属性
+- **训练结果**: 
+  - 行为向量损失: 4.16 → 4.14
+  - 位置向量损失: 4.16 → 4.14  
+  - 属性向量损失: 收敛到 0.0000
+- **向量维度**: 128维行为 + 128维位置 + 64维属性 → 256维融合嵌入
+- **训练时间**: 约1-2分钟（CPU）
 
 ## 注意事项
 
-1. 确保输入数据格式正确（TSV格式，包含`user_id`, `url`, `timestamp_str`, `weight`字段）。
-2. 根据数据规模和硬件资源调整 `config.py` 中的参数，如 `BATCH_SIZE`, `EMBEDDING_DIM`。
-3. 对于大规模数据集，强烈建议使用GPU进行训练。
-4. 可视化模块（尤其是t-SNE）在数据量大时可能消耗较多时间和内存，默认会进行采样。
+1. **数据格式**: 确保所有数据文件格式正确，用户ID在各文件中保持一致
+2. **参数调整**: 根据数据规模调整batch_size、embedding_dim等参数
+3. **模态选择**: 可根据需要选择性启用某些模态
+4. **内存管理**: 大规模数据建议使用GPU并适当调整batch_size
 
 ## 故障排除
 
 ### 常见问题
-1. **内存不足 (Out of Memory)**:
-    - 减小 `config.py` 中的 `BATCH_SIZE`。
-    - 如果是在可视化阶段，减小 `visualize_item_embeddings` 或 `visualize_user_embeddings` 函数调用时的 `sample_size`。
-    - 减小 `EMBEDDING_DIM`。
-2. **训练缓慢**:
-    - 确认 `Config.DEVICE` 是否已正确设置为 `cuda` 并且PyTorch能够访问到GPU。
 
-3. **`FileNotFoundError`**:
-    - 检查 `config.py` 中的 `DATA_PATH` 或命令行传入的 `--data_path` 是否正确。
-    - 确保在分步执行时，前一步骤已成功生成所需文件（例如，`train` 模式需要预处理后的数据）。
-    - 检查 `EXPERIMENT_NAME` 和相关的实验目录是否正确。
-4. **KeyError (例如，在映射中找不到ID)**:
-    - 确保数据预处理流程完整运行且没有错误。
-    - 检查 `url_mappings.pkl` 是否正确生成和加载。
+1. **维度不匹配错误**: 检查config.py中各模态的嵌入维度设置
+2. **数据加载失败**: 确保数据文件路径正确，格式符合要求
+3. **训练中断**: 使用--resume参数从检查点恢复训练
+4. **内存不足**: 减小batch_size或embedding_dim
 
 ### 调试技巧
-1. **使用小数据集测试**: 截取原始数据的一小部分进行测试，以便快速定位问题。
-2. **打印日志和变量**: 在关键步骤添加 `print` 语句，检查中间变量的状态。
-3. **使用TensorBoard**: 运行 `tensorboard --logdir experiments/{EXPERIMENT_NAME}/runs` 来监控训练过程中的损失和学习率。
-4. **逐步执行**: 使用 `main.py` 的分步模式 (`preprocess`, `train` 等) 来隔离问题。
-5. **检查配置文件**: 仔细核对 `config.py` 中的各项参数设置。
+
+1. **使用示例数据**: 先使用项目提供的示例数据验证流程
+2. **检查日志**: 查看TensorBoard日志监控训练过程
+3. **分步执行**: 使用分步模式逐步排查问题
+4. **验证数据**: 确保数据预处理步骤正确完成
 
 ## 扩展功能
 
-项目设计考虑了一定的可扩展性：
-
-1. **多种嵌入模型**: `model.py` 中的 `Item2Vec` 可以被替换或扩展为其他序列嵌入算法 (如GRU4Rec, BERT4Rec等，但这需要较大改动)。本项目已扩展支持 `Node2Vec`。
-2. **自定义聚合策略**: `UserEmbedding` 类可以方便地添加新的用户序列聚合方法。
-3. **在线推理**: 当前项目主要关注离线训练和评估。要部署为在线推荐服务，需要额外开发服务接口和模型加载、实时预测逻辑。
-4. **增量训练**: 当前训练流程是批量的。实现增量训练需要修改 `Trainer` 以支持从现有模型状态更新，并处理新数据。
-
+1. **新模态支持**: 可扩展支持更多模态（如文本、图像等）
+2. **模型替换**: 支持替换为其他嵌入模型
+3. **在线推理**: 可扩展为在线推荐服务
+4. **增量训练**: 支持增量更新用户表示
 
 ## 许可证
 
