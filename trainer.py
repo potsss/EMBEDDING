@@ -227,9 +227,11 @@ class AttributeDataset(Dataset):
     """
     属性训练数据集
     用于掩码属性预测任务
+    支持多模态（行为+属性+位置）
     """
     def __init__(self, user_sequences, user_attributes, attribute_info, behavior_model, 
-                 url_mappings, masking_ratio=0.15, config=Config):
+                 url_mappings, masking_ratio=0.15, config=Config, location_model=None,
+                 user_location_sequences=None, base_station_mappings=None, location_weights=None):
         self.user_sequences = user_sequences
         self.user_attributes = user_attributes
         self.attribute_info = attribute_info
@@ -238,8 +240,17 @@ class AttributeDataset(Dataset):
         self.masking_ratio = masking_ratio
         self.config = config
         
+        # 位置相关参数
+        self.location_model = location_model
+        self.user_location_sequences = user_location_sequences
+        self.base_station_mappings = base_station_mappings
+        self.location_weights = location_weights
+        
         # 预计算行为嵌入
         self.behavior_embeddings = self._precompute_behavior_embeddings()
+        
+        # 预计算位置嵌入（如果可用）
+        self.location_embeddings = self._precompute_location_embeddings()
         
         # 筛选有行为和属性数据的用户
         self.valid_users = [
@@ -257,6 +268,39 @@ class AttributeDataset(Dataset):
         )
         return user_embedding_calculator.compute_user_embeddings()
     
+    def _precompute_location_embeddings(self):
+        """预计算用户位置嵌入"""
+        if self.location_model is None or self.user_location_sequences is None:
+            return {}
+        
+        from model import UserLocationEmbedding
+        
+        # 首先获取基站嵌入
+        base_station_embeddings = {}
+        if self.base_station_mappings:
+            for bs_id in self.base_station_mappings['base_station_to_id'].keys():
+                idx = self.base_station_mappings['base_station_to_id'][bs_id]
+                if hasattr(self.location_model, 'in_embeddings'):
+                    embedding = self.location_model.in_embeddings.weight[idx].detach()
+                    base_station_embeddings[bs_id] = embedding
+        
+        # 创建位置嵌入计算器
+        user_location_embedding = UserLocationEmbedding(
+            self.config, base_station_embeddings, self.location_weights
+        )
+        
+        # 计算用户位置嵌入
+        user_location_embeddings = {}
+        if self.user_location_sequences:
+            for user_id, data in self.user_location_sequences.items():
+                if isinstance(data, dict) and 'base_stations' in data:
+                    base_stations = data['base_stations']
+                    weights = data['weights']
+                    location_embedding = user_location_embedding(base_stations, weights)
+                    user_location_embeddings[user_id] = location_embedding.detach().numpy()
+        
+        return user_location_embeddings
+    
     def __len__(self):
         return len(self.valid_users)
     
@@ -265,6 +309,11 @@ class AttributeDataset(Dataset):
         
         # 获取用户行为嵌入
         behavior_embedding = torch.tensor(self.behavior_embeddings[user_id], dtype=torch.float32)
+        
+        # 获取用户位置嵌入（如果可用）
+        location_embedding = None
+        if user_id in self.location_embeddings:
+            location_embedding = torch.tensor(self.location_embeddings[user_id], dtype=torch.float32)
         
         # 获取用户属性
         user_attrs = self.user_attributes[user_id].copy()
@@ -316,6 +365,7 @@ class AttributeDataset(Dataset):
         return {
             'user_id': user_id,
             'behavior_embedding': behavior_embedding,
+            'location_embedding': location_embedding,
             'categorical_inputs': all_categorical_inputs,
             'numerical_inputs': torch.tensor(all_numerical_values, dtype=torch.float32) if all_numerical_values else None,
             'masked_attrs': masked_attrs,
@@ -327,6 +377,7 @@ class AttributeTrainer:
     """
     属性训练器
     用于训练属性嵌入和融合模型
+    支持多模态融合（行为+属性+位置）
     """
     def __init__(self, behavior_model, user_sequences, user_attributes, attribute_info, 
                  url_mappings, config=Config):
@@ -338,41 +389,65 @@ class AttributeTrainer:
         self.config = config
         self.device = config.DEVICE_OBJ
         
+        # 位置相关参数（将由外部设置）
+        self.location_model = None
+        self.user_location_sequences = None
+        self.base_station_mappings = None
+        self.location_weights = None
+        
         # 创建属性模型
         self.attribute_model = AttributeEmbeddingModel(attribute_info, config).to(self.device)
         
-        # 创建融合模型
-        behavior_dim = config.EMBEDDING_DIM  # 行为嵌入维度
-        attribute_dim = config.ATTRIBUTE_EMBEDDING_DIM  # 属性嵌入维度
-        self.fusion_model = UserFusionModel(behavior_dim, attribute_dim, config).to(self.device)
+        # 融合模型将由外部设置（支持多模态）
+        self.fusion_model = None
+        
+        # 掩码预测模型将在设置融合模型后创建
+        self.prediction_model = None
+        
+        # 优化器、调度器等将在initialize_models中设置
+        self.optimizer = None
+        self.scheduler = None
+        self.early_stopping = None
+        self.writer = None
+        
+        # 训练历史
+        self.train_losses = []
+        self.val_losses = []
+    
+    def initialize_models(self):
+        """
+        初始化模型、优化器等（在设置融合模型后调用）
+        """
+        if self.fusion_model is None:
+            raise ValueError("融合模型未设置，请先设置fusion_model")
         
         # 创建掩码预测模型
         self.prediction_model = MaskedAttributePredictionModel(
-            self.attribute_model, self.fusion_model, attribute_info, config
+            self.attribute_model, self.fusion_model, self.attribute_info, self.config
         ).to(self.device)
         
-        # 优化器
+        # 创建优化器
         self.optimizer = torch.optim.Adam(
             list(self.attribute_model.parameters()) + 
             list(self.fusion_model.parameters()) + 
             list(self.prediction_model.parameters()),
-            lr=config.ATTRIBUTE_LEARNING_RATE
+            lr=self.config.ATTRIBUTE_LEARNING_RATE
         )
         
         # 学习率调度器
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=5, verbose=True
+            self.optimizer, mode='min', factor=0.5, patience=5
         )
         
         # 早停机制
         self.early_stopping = EarlyStopping(
-            patience=config.ATTRIBUTE_EARLY_STOPPING_PATIENCE,
+            patience=self.config.ATTRIBUTE_EARLY_STOPPING_PATIENCE,
             min_delta=0.001,
             verbose=True
         )
         
         # TensorBoard
-        tensorboard_dir = os.path.join(config.TENSORBOARD_DIR, 'attribute_training')
+        tensorboard_dir = os.path.join(self.config.TENSORBOARD_DIR, 'attribute_training')
         os.makedirs(tensorboard_dir, exist_ok=True)
         self.writer = SummaryWriter(tensorboard_dir)
         
@@ -381,15 +456,19 @@ class AttributeTrainer:
         self.val_losses = []
         
         print(f"属性训练器初始化完成:")
-        print(f"  属性数量: {len(attribute_info)}")
-        print(f"  类别型属性: {[attr for attr, info in attribute_info.items() if info['type'] == 'categorical']}")
-        print(f"  数值型属性: {[attr for attr, info in attribute_info.items() if info['type'] == 'numerical']}")
+        print(f"  属性数量: {len(self.attribute_info)}")
+        print(f"  类别型属性: {[attr for attr, info in self.attribute_info.items() if info['type'] == 'categorical']}")
+        print(f"  数值型属性: {[attr for attr, info in self.attribute_info.items() if info['type'] == 'numerical']}")
     
     def create_dataloader(self):
         """创建数据加载器"""
         dataset = AttributeDataset(
             self.user_sequences, self.user_attributes, self.attribute_info,
-            self.behavior_model, self.url_mappings, self.config.MASKING_RATIO, self.config
+            self.behavior_model, self.url_mappings, self.config.MASKING_RATIO, self.config,
+            location_model=self.location_model,
+            user_location_sequences=self.user_location_sequences,
+            base_station_mappings=self.base_station_mappings,
+            location_weights=self.location_weights
         )
         
         # 分割训练和验证集
@@ -423,6 +502,19 @@ class AttributeTrainer:
         
         # 收集行为嵌入
         behavior_embeddings = torch.stack([item['behavior_embedding'] for item in batch])
+        
+        # 收集位置嵌入（如果可用）
+        location_embeddings = None
+        if any(item['location_embedding'] is not None for item in batch):
+            location_embeds = []
+            for item in batch:
+                if item['location_embedding'] is not None:
+                    location_embeds.append(item['location_embedding'])
+                else:
+                    # 如果该用户没有位置嵌入，使用零向量
+                    location_dim = self.config.LOCATION_EMBEDDING_DIM
+                    location_embeds.append(torch.zeros(location_dim, dtype=torch.float32))
+            location_embeddings = torch.stack(location_embeds)
         
         # 收集所有属性名
         all_categorical_attrs = set()
@@ -488,6 +580,7 @@ class AttributeTrainer:
         
         return {
             'behavior_embeddings': behavior_embeddings,
+            'location_embeddings': location_embeddings,
             'categorical_inputs': batch_categorical_inputs,
             'numerical_inputs': batch_numerical_inputs,
             'masked_attrs_list': masked_attrs_list,
@@ -509,6 +602,11 @@ class AttributeTrainer:
             # 移动数据到设备
             behavior_embeddings = batch['behavior_embeddings'].to(self.device)
             
+            # 处理位置嵌入（如果可用）
+            location_embeddings = None
+            if 'location_embeddings' in batch and batch['location_embeddings'] is not None:
+                location_embeddings = batch['location_embeddings'].to(self.device)
+            
             categorical_inputs = {}
             for attr_name, attr_tensor in batch['categorical_inputs'].items():
                 categorical_inputs[attr_name] = attr_tensor.to(self.device)
@@ -522,7 +620,7 @@ class AttributeTrainer:
             
             # 前向传播
             predictions = self.prediction_model(
-                behavior_embeddings, categorical_inputs, numerical_inputs, list(all_masked_attrs)
+                behavior_embeddings, categorical_inputs, numerical_inputs, list(all_masked_attrs), location_embeddings
             )
             
             # 计算损失
@@ -586,6 +684,11 @@ class AttributeTrainer:
                 # 移动数据到设备
                 behavior_embeddings = batch['behavior_embeddings'].to(self.device)
                 
+                # 处理位置嵌入（如果可用）
+                location_embeddings = None
+                if 'location_embeddings' in batch and batch['location_embeddings'] is not None:
+                    location_embeddings = batch['location_embeddings'].to(self.device)
+                
                 categorical_inputs = {}
                 for attr_name, attr_tensor in batch['categorical_inputs'].items():
                     categorical_inputs[attr_name] = attr_tensor.to(self.device)
@@ -599,7 +702,7 @@ class AttributeTrainer:
                 
                 # 前向传播
                 predictions = self.prediction_model(
-                    behavior_embeddings, categorical_inputs, numerical_inputs, list(all_masked_attrs)
+                    behavior_embeddings, categorical_inputs, numerical_inputs, list(all_masked_attrs), location_embeddings
                 )
                 
                 # 计算损失
@@ -640,6 +743,9 @@ class AttributeTrainer:
     def train(self):
         """完整的属性训练流程"""
         print("开始属性训练...")
+        
+        # 初始化模型
+        self.initialize_models()
         
         # 创建数据加载器
         train_loader, val_loader = self.create_dataloader()
@@ -735,7 +841,7 @@ class AttributeTrainer:
         # 保存图片
         save_path = os.path.join(self.config.LOG_DIR, 'attribute_training_curves.png')
         plt.savefig(save_path)
-        plt.show()
+        plt.close()  # 关闭图片释放内存
         
         print(f"属性训练曲线已保存到: {save_path}")
 
@@ -755,6 +861,13 @@ def load_attribute_models(model_path, attribute_info, config=Config):
     fusion_model.load_state_dict(checkpoint['fusion_model_state_dict'])
     
     return attribute_model, fusion_model
+
+# 新增(lsx)
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 class Trainer:
     """
@@ -784,8 +897,9 @@ class Trainer:
             mode='min', 
             factor=0.5, 
             patience=5,
-            verbose=True
+            # verbose=True  # 这会导致错误，废弃（lsx）
         )
+        logger.info("Scheduler initialized")
         
         # 早停机制
         self.early_stopping = EarlyStopping(
@@ -964,7 +1078,7 @@ class Trainer:
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.config.LOG_DIR, 'training_curves.png'))
-        plt.show()
+        plt.close()  # 关闭图片释放内存
     
     def train(self, sequences_input, resume_from_checkpoint=False):
         """
@@ -1094,6 +1208,100 @@ class Trainer:
         checkpoint = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         print(f"模型已加载: {model_path}")
+
+def train_location_model(config, location_processor):
+    """训练位置嵌入模型
+    
+    Args:
+        config: 配置对象
+        location_processor: 位置数据处理器
+        
+    Returns:
+        训练好的位置嵌入模型和基站映射
+    """
+    print("开始训练位置嵌入模型...")
+    
+    # 处理用户基站连接数据
+    user_base_stations = location_processor.process_user_base_stations(config.LOCATION_DATA_PATH)
+    
+    if not user_base_stations:
+        print("没有有效的用户基站连接数据")
+        return None, None
+    
+    # 创建基站序列
+    sequences = location_processor.create_base_station_sequences(user_base_stations)
+    
+    if not sequences:
+        print("无法生成基站序列")
+        return None, None
+    
+    # 创建基站映射
+    all_base_stations = set()
+    for seq in sequences:
+        all_base_stations.update(seq)
+    
+    base_station_to_id = {bs: i for i, bs in enumerate(sorted(all_base_stations))}
+    id_to_base_station = {i: bs for bs, i in base_station_to_id.items()}
+    
+    print(f"基站总数: {len(all_base_stations)}")
+    print(f"序列总数: {len(sequences)}")
+    
+    # 转换序列为ID
+    id_sequences = []
+    for seq in sequences:
+        id_seq = [base_station_to_id[bs] for bs in seq]
+        id_sequences.append(id_seq)
+    
+    # 根据模型类型训练
+    if config.LOCATION_MODEL_TYPE == "item2vec":
+        # 创建Item2Vec模型
+        from model import Item2Vec
+        model = Item2Vec(len(all_base_stations), config.LOCATION_EMBEDDING_DIM)
+        
+        # 创建训练器
+        trainer = Trainer(model, config)
+        
+        # 训练模型
+        trainer.train(id_sequences)
+        
+    elif config.LOCATION_MODEL_TYPE == "node2vec":
+        # 创建Node2Vec模型
+        from model import Node2Vec
+        model = Node2Vec(len(all_base_stations), config.LOCATION_EMBEDDING_DIM)
+        
+        # 创建训练器
+        trainer = Trainer(model, config)
+        
+        # 对于Node2Vec，需要先构建图和生成随机游走
+        from utils.node2vec_utils import build_graph_from_sequences, generate_node2vec_walks_with_cache
+        
+        # 构建图
+        graph = build_graph_from_sequences(id_sequences, directed=False)
+        
+        # 生成随机游走
+        walks = generate_node2vec_walks_with_cache(
+            graph=graph,
+            num_walks=config.NUM_WALKS,
+            walk_length=config.WALK_LENGTH,
+            p=config.P_PARAM,
+            q=config.Q_PARAM,
+            use_cache=config.USE_WALKS_CACHE,
+            force_regenerate=config.FORCE_REGENERATE_WALKS
+        )
+        
+        # 训练模型
+        trainer.train(walks)
+        
+    else:
+        raise ValueError(f"不支持的位置模型类型: {config.LOCATION_MODEL_TYPE}")
+    
+    base_station_mappings = {
+        'base_station_to_id': base_station_to_id,
+        'id_to_base_station': id_to_base_station
+    }
+    
+    print("位置嵌入模型训练完成")
+    return model, base_station_mappings
 
 if __name__ == "__main__":
     # 示例使用

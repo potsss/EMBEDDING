@@ -11,6 +11,378 @@ from config import Config
 import pickle
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+import random
+
+class LocationProcessor:
+    """
+    基站位置数据处理器
+    """
+    def __init__(self, config=Config):
+        self.config = config
+        self.base_station_to_id = {}
+        self.id_to_base_station = {}
+        self.user_location_sequences = {}
+        self.base_station_features = {}
+        self.processed_location_data = {}
+        self.base_station_text_embeddings = {}
+        self.text_model = None
+        
+    def load_location_data(self, file_path=None):
+        """
+        加载基站连接数据
+        期望格式：user_id, base_station_id, timestamp_str, duration
+        """
+        if file_path is None:
+            file_path = self.config.LOCATION_DATA_PATH
+            
+        if not os.path.exists(file_path):
+            print(f"位置数据文件不存在: {file_path}")
+            return None
+            
+        print(f"加载位置数据: {file_path}")
+        try:
+            df = pd.read_csv(file_path, sep='\t')
+            print(f"位置数据加载成功，形状: {df.shape}")
+            return df
+        except Exception as e:
+            print(f"加载位置数据时出错: {e}")
+            return None
+    
+    def load_base_station_features(self, features_path):
+        """加载基站特征数据
+        
+        Args:
+            features_path: 基站特征文件路径
+        """
+        if not os.path.exists(features_path):
+            print(f"基站特征文件 {features_path} 不存在，将跳过特征加载")
+            return
+        
+        print(f"正在加载基站特征数据: {features_path}")
+        
+        try:
+            # 读取基站特征数据：ID，名称
+            df = pd.read_csv(features_path, sep='\t', header=None, names=['base_station_id', 'name'])
+            
+            # 根据配置选择处理模式
+            if self.config.BASE_STATION_FEATURE_MODE == "none":
+                # 模式1：完全不使用特征
+                print("基站特征模式：不使用特征")
+                return
+                
+            elif self.config.BASE_STATION_FEATURE_MODE == "text_embedding":
+                # 模式2：使用预训练语言模型编码名称
+                print("基站特征模式：使用预训练语言模型编码名称")
+                self._load_text_embedding_model()
+                self._process_text_embeddings(df)
+                
+            else:
+                raise ValueError(f"不支持的基站特征模式: {self.config.BASE_STATION_FEATURE_MODE}")
+                
+        except Exception as e:
+            print(f"加载基站特征时出错: {e}")
+            print("将跳过特征处理")
+    
+    def _load_text_embedding_model(self):
+        """加载预训练的文本嵌入模型"""
+        try:
+            from sentence_transformers import SentenceTransformer
+            print(f"正在加载预训练模型: {self.config.TEXT_EMBEDDING_MODEL}")
+            self.text_model = SentenceTransformer(self.config.TEXT_EMBEDDING_MODEL)
+            print("预训练模型加载完成")
+        except ImportError:
+            raise ImportError("请安装sentence-transformers库: pip install sentence-transformers")
+        except Exception as e:
+            raise RuntimeError(f"加载预训练模型失败: {e}")
+    
+    def _process_text_embeddings(self, df):
+        """处理文本嵌入"""
+        print("正在生成文本嵌入...")
+        
+        # 获取所有基站名称
+        base_station_names = df['name'].fillna('').tolist()
+        base_station_ids = df['base_station_id'].tolist()
+        
+        # 生成文本嵌入
+        if base_station_names:
+            embeddings = self.text_model.encode(base_station_names, batch_size=32, show_progress_bar=True)
+            
+            # 存储嵌入
+            for bs_id, embedding in zip(base_station_ids, embeddings):
+                self.base_station_text_embeddings[bs_id] = embedding
+                
+        print(f"成功生成 {len(self.base_station_text_embeddings)} 个基站的文本嵌入")
+        
+    def get_base_station_feature(self, base_station_id):
+        """获取基站特征
+        
+        Args:
+            base_station_id: 基站ID
+            
+        Returns:
+            基站特征向量或None
+        """
+        if self.config.BASE_STATION_FEATURE_MODE == "none":
+            return None
+        elif self.config.BASE_STATION_FEATURE_MODE == "text_embedding":
+            return self.base_station_text_embeddings.get(base_station_id)
+        else:
+            return None
+    
+    def get_feature_dimension(self):
+        """获取特征维度"""
+        if self.config.BASE_STATION_FEATURE_MODE == "none":
+            return 0
+        elif self.config.BASE_STATION_FEATURE_MODE == "text_embedding":
+            return self.config.TEXT_EMBEDDING_DIM
+        else:
+            return 0
+    
+    def process_location_data(self, df):
+        """
+        处理基站数据，生成用户基站序列
+        """
+        print("处理基站位置数据...")
+        
+        # 数据清洗
+        df = df.dropna(subset=['user_id', 'base_station_id'])
+        df = df.drop_duplicates()
+        
+        # 按用户和时间排序
+        df['timestamp'] = pd.to_datetime(df['timestamp_str'])
+        df = df.sort_values(['user_id', 'timestamp'])
+        
+        # 创建基站ID映射
+        unique_base_stations = df['base_station_id'].unique()
+        self.base_station_to_id = {bs: i for i, bs in enumerate(unique_base_stations)}
+        self.id_to_base_station = {i: bs for bs, i in self.base_station_to_id.items()}
+        
+        print(f"唯一基站数量: {len(unique_base_stations)}")
+        
+        # 生成用户基站序列
+        user_sequences = {}
+        for user_id, user_data in df.groupby('user_id'):
+            # 按时间排序的基站序列
+            base_station_sequence = user_data['base_station_id'].tolist()
+            
+            # 转换为ID序列
+            id_sequence = [self.base_station_to_id[bs] for bs in base_station_sequence]
+            
+            # 过滤太短的序列
+            if len(id_sequence) >= self.config.LOCATION_MIN_COUNT:
+                user_sequences[user_id] = id_sequence
+        
+        self.user_location_sequences = user_sequences
+        
+        # 存储权重信息（连接时长）
+        user_weights = {}
+        for user_id, user_data in df.groupby('user_id'):
+            if user_id in user_sequences:
+                weights = {}
+                for _, row in user_data.iterrows():
+                    bs_id = row['base_station_id']
+                    duration = row.get('duration', 1.0)  # 默认权重为1
+                    weights[bs_id] = weights.get(bs_id, 0) + duration
+                user_weights[user_id] = weights
+        
+        self.processed_location_data = {
+            'user_sequences': user_sequences,
+            'user_weights': user_weights,
+            'base_station_mappings': {
+                'base_station_to_id': self.base_station_to_id,
+                'id_to_base_station': self.id_to_base_station
+            }
+        }
+        
+        print(f"处理完成，有效用户数量: {len(user_sequences)}")
+        return self.processed_location_data
+    
+    def process_base_station_features(self, df):
+        """
+        处理基站特征数据
+        """
+        if df is None:
+            return None
+            
+        print("处理基站特征数据...")
+        
+        # 基站特征处理
+        feature_info = {}
+        for _, row in df.iterrows():
+            bs_id = row['base_station_id']
+            features = {
+                'name': row.get('name', 'unknown'),
+                'area_type': row.get('area_type', 'unknown'),
+                'coverage_type': row.get('coverage_type', 'unknown')
+            }
+            feature_info[bs_id] = features
+        
+        self.base_station_features = feature_info
+        print(f"基站特征处理完成，基站数量: {len(feature_info)}")
+        return feature_info
+    
+    def save_processed_data(self, save_dir):
+        """
+        保存处理后的位置数据
+        """
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        
+        # 保存基站序列
+        location_sequences_path = os.path.join(save_dir, 'location_sequences.pkl')
+        with open(location_sequences_path, 'wb') as f:
+            pickle.dump(self.user_location_sequences, f)
+        print(f"位置序列已保存到: {location_sequences_path}")
+        
+        # 保存基站映射
+        base_station_mappings_path = os.path.join(save_dir, 'base_station_mappings.pkl')
+        with open(base_station_mappings_path, 'wb') as f:
+            pickle.dump(self.processed_location_data['base_station_mappings'], f)
+        print(f"基站映射已保存到: {base_station_mappings_path}")
+        
+        # 保存权重信息
+        location_weights_path = os.path.join(save_dir, 'location_weights.pkl')
+        with open(location_weights_path, 'wb') as f:
+            pickle.dump(self.processed_location_data['user_weights'], f)
+        print(f"位置权重已保存到: {location_weights_path}")
+        
+        # 保存基站特征（如果有）
+        if self.base_station_features:
+            base_station_features_path = os.path.join(save_dir, 'base_station_features.pkl')
+            with open(base_station_features_path, 'wb') as f:
+                pickle.dump(self.base_station_features, f)
+            print(f"基站特征已保存到: {base_station_features_path}")
+    
+    def load_processed_data(self, save_dir):
+        """
+        加载处理后的位置数据
+        """
+        try:
+            # 加载位置序列
+            location_sequences_path = os.path.join(save_dir, 'location_sequences.pkl')
+            if os.path.exists(location_sequences_path):
+                with open(location_sequences_path, 'rb') as f:
+                    self.user_location_sequences = pickle.load(f)
+            
+            # 加载基站映射
+            base_station_mappings_path = os.path.join(save_dir, 'base_station_mappings.pkl')
+            if os.path.exists(base_station_mappings_path):
+                with open(base_station_mappings_path, 'rb') as f:
+                    mappings = pickle.load(f)
+                    self.base_station_to_id = mappings['base_station_to_id']
+                    self.id_to_base_station = mappings['id_to_base_station']
+            
+            # 加载权重信息
+            location_weights_path = os.path.join(save_dir, 'location_weights.pkl')
+            if os.path.exists(location_weights_path):
+                with open(location_weights_path, 'rb') as f:
+                    location_weights = pickle.load(f)
+            else:
+                location_weights = {}
+            
+            # 加载基站特征
+            base_station_features_path = os.path.join(save_dir, 'base_station_features.pkl')
+            if os.path.exists(base_station_features_path):
+                with open(base_station_features_path, 'rb') as f:
+                    self.base_station_features = pickle.load(f)
+            
+            self.processed_location_data = {
+                'user_sequences': self.user_location_sequences,
+                'user_weights': location_weights,
+                'base_station_mappings': {
+                    'base_station_to_id': self.base_station_to_id,
+                    'id_to_base_station': self.id_to_base_station
+                }
+            }
+            
+            print(f"位置数据加载成功，用户数量: {len(self.user_location_sequences)}")
+            return self.processed_location_data
+            
+        except Exception as e:
+            print(f"加载位置数据时出错: {e}")
+            return None
+    
+    def process_user_base_stations(self, data_path):
+        """处理用户基站连接数据
+        
+        Args:
+            data_path: 基站连接数据文件路径
+            
+        Returns:
+            处理后的数据字典
+        """
+        print(f"正在加载用户基站连接数据: {data_path}")
+        
+        try:
+            # 读取用户基站连接数据
+            df = pd.read_csv(data_path, sep='\t')
+            
+            # 验证必要的列
+            required_columns = ['user_id', 'base_station_id', 'timestamp_str', 'duration']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                raise ValueError(f"缺少必要的列: {missing_columns}")
+            
+            # 转换时间戳
+            df['timestamp'] = pd.to_datetime(df['timestamp_str'])
+            
+            # 过滤有效数据
+            df = df[df['duration'] > 0]  # 过滤持续时间为0的记录
+            
+            # 按用户分组处理
+            user_base_stations = {}
+            for user_id, group in df.groupby('user_id'):
+                # 按时间排序
+                group = group.sort_values('timestamp')
+                
+                # 计算每个基站的连接权重（基于持续时间）
+                base_station_weights = group.groupby('base_station_id')['duration'].sum()
+                
+                # 过滤连接次数过少的用户
+                if len(base_station_weights) >= self.config.LOCATION_MIN_CONNECTIONS:
+                    user_base_stations[user_id] = {
+                        'base_stations': base_station_weights.index.tolist(),
+                        'weights': base_station_weights.values.tolist(),
+                        'total_duration': base_station_weights.sum()
+                    }
+            
+            print(f"成功处理 {len(user_base_stations)} 个用户的基站连接数据")
+            return user_base_stations
+            
+        except Exception as e:
+            print(f"处理用户基站连接数据时出错: {e}")
+            return {}
+    
+    def create_base_station_sequences(self, user_base_stations):
+        """创建基站序列用于训练嵌入模型
+        
+        Args:
+            user_base_stations: 用户基站连接数据
+            
+        Returns:
+            基站序列列表
+        """
+        sequences = []
+        
+        for user_id, data in user_base_stations.items():
+            base_stations = data['base_stations']
+            weights = data['weights']
+            
+            # 根据权重生成序列（权重越大，在序列中出现次数越多）
+            weighted_sequence = []
+            for bs, weight in zip(base_stations, weights):
+                # 根据权重决定出现次数（至少出现1次）
+                max_weight = max(weights) if weights else 1
+                count = max(1, int(weight / max_weight * 10))
+                weighted_sequence.extend([str(bs)] * count)
+            
+            # 随机打乱序列
+            import random
+            random.shuffle(weighted_sequence)
+            sequences.append(weighted_sequence)
+        
+        print(f"生成了 {len(sequences)} 个基站序列")
+        return sequences
 
 class AttributeProcessor:
     """
@@ -238,6 +610,9 @@ class DataPreprocessor:
         # 添加属性处理器
         self.attribute_processor = AttributeProcessor(config) if config.ENABLE_ATTRIBUTES else None
         
+        # 添加位置处理器
+        self.location_processor = LocationProcessor(config) if config.ENABLE_LOCATION else None
+        
     def clean_data(self, df):
         """
         数据清洗
@@ -411,6 +786,60 @@ class DataPreprocessor:
                 print(f"属性数据处理完成，属性数量: {len(attribute_info)}")
             else:
                 print("属性数据处理失败或跳过")
+        
+        # 处理用户位置数据（如果启用）
+        if self.config.ENABLE_LOCATION and self.location_processor:
+            print("\n" + "="*50)
+            print("开始处理用户位置数据")
+            print("="*50)
+            
+            # 加载和处理基站特征数据
+            self.location_processor.load_base_station_features(self.config.LOCATION_FEATURES_PATH)
+            
+            # 处理用户基站连接数据
+            user_base_stations = self.location_processor.process_user_base_stations(self.config.LOCATION_DATA_PATH)
+            
+            if user_base_stations:
+                # 创建基站序列用于训练
+                sequences = self.location_processor.create_base_station_sequences(user_base_stations)
+                
+                # 获取基站总数
+                all_base_stations = set()
+                for data in user_base_stations.values():
+                    all_base_stations.update(data['base_stations'])
+                
+                # 创建基站ID映射
+                base_station_list = list(all_base_stations)
+                self.location_processor.base_station_to_id = {bs: i for i, bs in enumerate(base_station_list)}
+                self.location_processor.id_to_base_station = {i: bs for bs, i in self.location_processor.base_station_to_id.items()}
+                
+                # 更新位置序列为ID序列
+                user_location_sequences = {}
+                for user_id, data in user_base_stations.items():
+                    base_stations = data['base_stations']
+                    id_sequence = [self.location_processor.base_station_to_id[bs] for bs in base_stations]
+                    user_location_sequences[user_id] = id_sequence
+                
+                self.location_processor.user_location_sequences = user_location_sequences
+                
+                # 设置处理后的数据
+                self.location_processor.processed_location_data = {
+                    'user_sequences': user_location_sequences,
+                    'user_weights': {user_id: dict(zip(data['base_stations'], data['weights'])) for user_id, data in user_base_stations.items()},
+                    'base_station_mappings': {
+                        'base_station_to_id': self.location_processor.base_station_to_id,
+                        'id_to_base_station': self.location_processor.id_to_base_station
+                    }
+                }
+                
+                # 保存处理后的位置数据
+                self.location_processor.save_processed_data(self.config.PROCESSED_DATA_PATH)
+                
+                print(f"位置数据处理完成，用户数量: {len(user_location_sequences)}")
+                print(f"  位置用户数量: {len(user_location_sequences)}")
+                print(f"  基站数量: {len(all_base_stations)}")
+            else:
+                print("位置数据处理失败或跳过")
         
         return user_sequences
 

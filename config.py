@@ -58,7 +58,7 @@ class Config:
     包含所有模型训练和评估的参数
     """
     # 实验配置
-    EXPERIMENT_NAME = "test_attribute"
+    EXPERIMENT_NAME = "three_vector_test"
     
     # 基础路径配置
     BASE_DIR = BASE_DIR
@@ -66,21 +66,42 @@ class Config:
     EXPERIMENT_DIR = EXPERIMENT_DIR
     
     # 数据相关配置
-    DATA_PATH = "data/edu.csv"
-    ATTRIBUTE_DATA_PATH = "data/user_attributes.tsv"  # 用户属性数据路径
+    DATA_PATH = "data/test_user_behavior.csv"  # 使用我们创建的测试数据
+    ATTRIBUTE_DATA_PATH = "data/sample_user_attributes.tsv"
     
     # 行为向量相关配置
-    MODEL_TYPE = "item2vec"  # 可选 "item2vec" 或 "node2vec"
+    MODEL_TYPE = "node2vec"  # 可选 "item2vec" 或 "node2vec"
     EMBEDDING_DIM = 128
     WINDOW_SIZE = 5
     MIN_COUNT = 5
     NEGATIVE_SAMPLES = 5
     
     # 属性向量相关配置
-    ENABLE_ATTRIBUTES = False  # 是否启用属性向量训练
+    ENABLE_ATTRIBUTES = True  # 启用属性向量
     ATTRIBUTE_EMBEDDING_DIM = 64  # 属性嵌入维度
     FUSION_HIDDEN_DIM = 256  # 融合层隐藏维度
     FINAL_USER_EMBEDDING_DIM = 256  # 最终用户嵌入维度
+    
+    # 位置相关配置
+    ENABLE_LOCATION = True   # 启用位置向量
+    LOCATION_DATA_PATH = "data/sample_user_base_stations.tsv"
+    LOCATION_FEATURES_PATH = "data/sample_base_station_features.tsv"
+    LOCATION_EMBEDDING_DIM = 128
+    LOCATION_MIN_CONNECTIONS = 2  # 用户最少需要连接的基站数量
+    
+    # 基站特征使用模式
+    BASE_STATION_FEATURE_MODE = "none"  # "none" 或 "text_embedding"
+    TEXT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # 预训练语言模型
+    TEXT_EMBEDDING_DIM = 384  # 文本嵌入维度
+    
+    # 位置模型训练参数
+    LOCATION_LEARNING_RATE = 0.001
+    LOCATION_EPOCHS = 5
+    LOCATION_MODEL_TYPE = "item2vec"  # "item2vec" 或 "node2vec"
+    LOCATION_WINDOW_SIZE = 5
+    LOCATION_NEGATIVE_SAMPLES = 5
+    LOCATION_MIN_COUNT = 1
+    LOCATION_BATCH_SIZE = 64
     
     # 数值属性处理配置
     NUMERICAL_STANDARDIZATION = True  # 是否对数值属性进行标准化
@@ -100,18 +121,22 @@ class Config:
     # 行为训练相关配置
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     LEARNING_RATE = 0.001
-    EPOCHS = 2
-    BATCH_SIZE = 4096
+    EPOCHS = 10              # 减少训练轮数用于快速测试
+    BATCH_SIZE = 256 # 4096
     RANDOM_SEED = 42
     NUM_WORKERS = 0  # DataLoader的num_workers, Windows默认为0, Linux可尝试 os.cpu_count() // 2
     PIN_MEMORY = True if DEVICE == "cuda" else False # DataLoader的pin_memory
 
     # 属性训练相关配置
     ATTRIBUTE_LEARNING_RATE = 0.001  # 属性训练学习率
-    ATTRIBUTE_EPOCHS = 50  # 属性训练轮次
+    ATTRIBUTE_EPOCHS = 8     # 属性模型训练轮数
     ATTRIBUTE_BATCH_SIZE = 512  # 属性训练批次大小
     MASKING_RATIO = 0.15  # 掩码比例
     ATTRIBUTE_EARLY_STOPPING_PATIENCE = 10  # 属性训练早停耐心值
     
     # 可视化相关配置
     CLUSTER_NUM = 10
+    
+    # 其他配置（lsx）
+    EARLY_STOPPING_PATIENCE = 10  # 假设早停的耐心值为10
+    EVAL_INTERVAL = 2  # 假设每1个epoch进行一次评估

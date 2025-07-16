@@ -115,8 +115,8 @@ class Visualizer:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"可视化结果已保存到: {save_path}")
         
-        # 显示图片
-        plt.show()
+        # 关闭图片释放内存
+        plt.close()
         
         return pd.DataFrame({
             'x': reduced_embeddings[:, 0],

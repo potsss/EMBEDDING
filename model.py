@@ -432,18 +432,105 @@ class AttributeEmbeddingModel(nn.Module):
         else:
             return combined_embedding
 
+class UserLocationEmbedding(nn.Module):
+    """用户位置嵌入计算模块"""
+    
+    def __init__(self, config, base_station_embeddings, location_processor=None):
+        super().__init__()
+        self.config = config
+        self.base_station_embeddings = base_station_embeddings
+        self.location_processor = location_processor
+        self.embedding_dim = config.LOCATION_EMBEDDING_DIM
+        
+        # 根据基站特征模式决定是否需要特征融合层
+        if config.BASE_STATION_FEATURE_MODE == "text_embedding" and location_processor:
+            # 创建特征融合层
+            feature_dim = location_processor.get_feature_dimension()
+            if feature_dim > 0:
+                self.feature_fusion = nn.Linear(
+                    self.embedding_dim + feature_dim, 
+                    self.embedding_dim
+                )
+                self.use_features = True
+            else:
+                self.use_features = False
+        else:
+            self.use_features = False
+        
+        # 位置嵌入聚合层
+        self.aggregation_layer = nn.Linear(self.embedding_dim, self.embedding_dim)
+        
+    def forward(self, user_base_stations, user_weights):
+        """
+        计算用户位置嵌入
+        
+        Args:
+            user_base_stations: 用户连接的基站ID列表
+            user_weights: 对应的权重列表
+            
+        Returns:
+            用户位置嵌入向量
+        """
+        if not user_base_stations:
+            # 如果用户没有位置数据，返回零向量
+            return torch.zeros(self.embedding_dim)
+        
+        # 获取基站嵌入
+        base_station_embeddings = []
+        weights = []
+        
+        for bs_id, weight in zip(user_base_stations, user_weights):
+            if bs_id in self.base_station_embeddings:
+                base_embedding = self.base_station_embeddings[bs_id]
+                
+                # 如果启用了特征融合
+                if self.use_features and self.location_processor:
+                    feature = self.location_processor.get_base_station_feature(bs_id)
+                    if feature is not None:
+                        # 拼接基站嵌入和特征
+                        feature_tensor = torch.tensor(feature, dtype=torch.float32)
+                        combined = torch.cat([base_embedding, feature_tensor], dim=0)
+                        base_embedding = self.feature_fusion(combined)
+                
+                base_station_embeddings.append(base_embedding)
+                weights.append(weight)
+        
+        if not base_station_embeddings:
+            return torch.zeros(self.embedding_dim)
+        
+        # 堆叠嵌入
+        embeddings = torch.stack(base_station_embeddings)
+        weights = torch.tensor(weights, dtype=torch.float32)
+        
+        # 权重归一化
+        weights = weights / weights.sum()
+        
+        # 加权平均
+        weighted_embedding = torch.sum(embeddings * weights.unsqueeze(1), dim=0)
+        
+        # 通过聚合层
+        return self.aggregation_layer(weighted_embedding)
+
 class UserFusionModel(nn.Module):
     """
-    用户行为向量和属性向量融合模型
+    用户多模态融合模型
+    支持行为向量、属性向量和位置向量的融合
     """
-    def __init__(self, behavior_dim, attribute_dim, config=Config):
+    def __init__(self, behavior_dim, attribute_dim=None, location_dim=None, config=Config):
         super(UserFusionModel, self).__init__()
         self.behavior_dim = behavior_dim
         self.attribute_dim = attribute_dim
+        self.location_dim = location_dim
         self.config = config
         
+        # 计算输入维度
+        input_dim = behavior_dim
+        if attribute_dim is not None:
+            input_dim += attribute_dim
+        if location_dim is not None:
+            input_dim += location_dim
+        
         # 融合层
-        input_dim = behavior_dim + attribute_dim
         self.fusion_layers = nn.Sequential(
             nn.Linear(input_dim, config.FUSION_HIDDEN_DIM),
             nn.ReLU(),
@@ -463,15 +550,23 @@ class UserFusionModel(nn.Module):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.constant_(layer.bias, 0)
     
-    def forward(self, behavior_embeddings, attribute_embeddings):
+    def forward(self, behavior_embeddings, attribute_embeddings=None, location_embeddings=None):
         """
-        融合行为嵌入和属性嵌入
+        融合多模态嵌入
         Args:
             behavior_embeddings: [batch_size, behavior_dim]
-            attribute_embeddings: [batch_size, attribute_dim]
+            attribute_embeddings: [batch_size, attribute_dim] (可选)
+            location_embeddings: [batch_size, location_dim] (可选)
         """
-        # 拼接两种嵌入
-        combined = torch.cat([behavior_embeddings, attribute_embeddings], dim=-1)
+        # 拼接所有可用的嵌入
+        embeddings_to_fuse = [behavior_embeddings]
+        
+        if attribute_embeddings is not None:
+            embeddings_to_fuse.append(attribute_embeddings)
+        if location_embeddings is not None:
+            embeddings_to_fuse.append(location_embeddings)
+        
+        combined = torch.cat(embeddings_to_fuse, dim=-1)
         
         # 通过融合网络
         fused_embedding = self.fusion_layers(combined)
@@ -485,6 +580,7 @@ class MaskedAttributePredictionModel(nn.Module):
     """
     掩码属性预测模型
     用于训练属性嵌入的自监督任务
+    支持多模态融合（行为+属性+位置）
     """
     def __init__(self, attribute_embedding_model, user_fusion_model, attribute_info, config=Config):
         super(MaskedAttributePredictionModel, self).__init__()
@@ -518,7 +614,7 @@ class MaskedAttributePredictionModel(nn.Module):
             nn.init.xavier_uniform_(head.weight)
             nn.init.constant_(head.bias, 0)
     
-    def forward(self, behavior_embeddings, categorical_inputs, numerical_inputs, masked_attrs):
+    def forward(self, behavior_embeddings, categorical_inputs, numerical_inputs, masked_attrs, location_embeddings=None):
         """
         前向传播
         Args:
@@ -526,12 +622,17 @@ class MaskedAttributePredictionModel(nn.Module):
             categorical_inputs: 类别属性输入（可能包含掩码）
             numerical_inputs: 数值属性输入（可能包含掩码）
             masked_attrs: 被掩码的属性列表
+            location_embeddings: 用户位置嵌入（可选）
         """
         # 获取属性嵌入（使用掩码后的输入）
         attribute_embeddings = self.attribute_embedding_model(categorical_inputs, numerical_inputs)
         
-        # 融合行为和属性嵌入
-        fused_embeddings = self.user_fusion_model(behavior_embeddings, attribute_embeddings)
+        # 融合行为、属性和位置嵌入
+        fused_embeddings = self.user_fusion_model(
+            behavior_embeddings, 
+            attribute_embeddings, 
+            location_embeddings
+        )
         
         # 预测被掩码的属性
         predictions = {}
@@ -544,10 +645,12 @@ class MaskedAttributePredictionModel(nn.Module):
 class EnhancedUserEmbedding:
     """
     增强的用户嵌入类
-    结合行为向量和属性向量
+    结合行为向量、属性向量和位置向量
     """
     def __init__(self, behavior_model, attribute_model, fusion_model, user_sequences, 
-                 user_attributes, url_mappings, attribute_info):
+                 user_attributes, url_mappings, attribute_info, location_model=None, 
+                 user_location_sequences=None, base_station_mappings=None, location_weights=None,
+                 location_processor=None):
         self.behavior_model = behavior_model
         self.attribute_model = attribute_model
         self.fusion_model = fusion_model
@@ -555,11 +658,16 @@ class EnhancedUserEmbedding:
         self.user_attributes = user_attributes
         self.url_mappings = url_mappings
         self.attribute_info = attribute_info
+        self.location_model = location_model
+        self.user_location_sequences = user_location_sequences
+        self.base_station_mappings = base_station_mappings
+        self.location_weights = location_weights
+        self.location_processor = location_processor
         self.enhanced_user_embeddings = {}
     
     def compute_enhanced_user_embeddings(self):
         """
-        计算增强的用户嵌入（行为+属性）
+        计算增强的用户嵌入（行为+属性+位置）
         """
         # 获取行为嵌入
         basic_user_embedding = UserEmbedding(
@@ -567,42 +675,77 @@ class EnhancedUserEmbedding:
         )
         behavior_embeddings = basic_user_embedding.compute_user_embeddings()
         
+        # 获取位置嵌入（如果可用）
+        location_embeddings = {}
+        if self.location_model and self.user_location_sequences:
+            # 获取基站嵌入
+            base_station_embeddings = {}
+            for bs_id, idx in self.base_station_mappings['base_station_to_id'].items():
+                if hasattr(self.location_model, 'in_embeddings'):
+                    embedding = self.location_model.in_embeddings.weight[idx].detach()
+                    base_station_embeddings[bs_id] = embedding
+                elif hasattr(self.location_model, 'embeddings'):
+                    embedding = self.location_model.embeddings.weight[idx].detach()
+                    base_station_embeddings[bs_id] = embedding
+            
+            # 创建位置嵌入计算器
+            from config import Config
+            location_user_embedding = UserLocationEmbedding(
+                Config, base_station_embeddings, self.location_processor
+            )
+            
+            # 计算位置嵌入
+            location_embeddings = {}
+            for user_id, data in self.location_weights.items():
+                if user_id in self.user_location_sequences:
+                    base_stations = list(data.keys())
+                    weights = list(data.values())
+                    
+                    # 计算位置嵌入
+                    location_embedding = location_user_embedding(base_stations, weights)
+                    location_embeddings[user_id] = location_embedding.detach().numpy()
+        
         # 为所有用户计算增强嵌入
         self.enhanced_user_embeddings = {}
         
         for user_id in behavior_embeddings.keys():
-            if user_id not in self.user_attributes:
-                # 如果用户没有属性数据，只使用行为嵌入
-                self.enhanced_user_embeddings[user_id] = behavior_embeddings[user_id]
-                continue
+            # 获取用户行为嵌入
+            behavior_tensor = torch.tensor([behavior_embeddings[user_id]], dtype=torch.float32)
             
-            # 获取用户属性
-            user_attrs = self.user_attributes[user_id]
-            
-            # 准备属性输入
-            categorical_inputs = {}
-            numerical_values = []
-            
-            for attr_name, attr_value in user_attrs.items():
-                if self.attribute_info[attr_name]['type'] == 'categorical':
-                    categorical_inputs[attr_name] = torch.tensor([attr_value], dtype=torch.long)
-                else:
-                    numerical_values.append(attr_value)
-            
-            numerical_inputs = torch.tensor([numerical_values], dtype=torch.float32) if numerical_values else None
-            
-            # 计算属性嵌入
-            with torch.no_grad():
-                attribute_embedding = self.attribute_model(categorical_inputs, numerical_inputs)
+            # 获取用户属性嵌入
+            attribute_embedding = None
+            if user_id in self.user_attributes:
+                user_attrs = self.user_attributes[user_id]
                 
-                if attribute_embedding is not None:
-                    # 融合行为和属性嵌入
-                    behavior_tensor = torch.tensor([behavior_embeddings[user_id]], dtype=torch.float32)
-                    fused_embedding = self.fusion_model(behavior_tensor, attribute_embedding)
-                    self.enhanced_user_embeddings[user_id] = fused_embedding.squeeze().cpu().numpy()
-                else:
-                    # 如果属性嵌入失败，使用行为嵌入
-                    self.enhanced_user_embeddings[user_id] = behavior_embeddings[user_id]
+                # 准备属性输入
+                categorical_inputs = {}
+                numerical_values = []
+                
+                for attr_name, attr_value in user_attrs.items():
+                    if self.attribute_info[attr_name]['type'] == 'categorical':
+                        categorical_inputs[attr_name] = torch.tensor([attr_value], dtype=torch.long)
+                    else:
+                        numerical_values.append(attr_value)
+                
+                numerical_inputs = torch.tensor([numerical_values], dtype=torch.float32) if numerical_values else None
+                
+                # 计算属性嵌入
+                with torch.no_grad():
+                    attribute_embedding = self.attribute_model(categorical_inputs, numerical_inputs)
+            
+            # 获取用户位置嵌入
+            location_embedding = None
+            if user_id in location_embeddings:
+                location_embedding = torch.tensor([location_embeddings[user_id]], dtype=torch.float32)
+            
+            # 融合所有可用的嵌入
+            with torch.no_grad():
+                fused_embedding = self.fusion_model(
+                    behavior_tensor, 
+                    attribute_embedding, 
+                    location_embedding
+                )
+                self.enhanced_user_embeddings[user_id] = fused_embedding.squeeze().cpu().numpy()
         
         return self.enhanced_user_embeddings
     

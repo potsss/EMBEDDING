@@ -10,9 +10,10 @@ import random
 import json
 from datetime import datetime
 from config import Config, get_experiment_dir, get_experiment_paths
-from data_preprocessing import DataPreprocessor
+from data_preprocessing import DataPreprocessor, LocationProcessor
 from model import Item2Vec, UserEmbedding
-from trainer import Trainer
+from trainer import Trainer, AttributeTrainer, train_location_model
+from trainer import load_attribute_models
 from visualizer import Visualizer
 
 # 导入Node2Vec相关的模块
@@ -20,8 +21,10 @@ from model import Node2Vec
 from utils.node2vec_utils import build_graph_from_sequences, generate_node2vec_walks, generate_node2vec_walks_precompute, generate_node2vec_walks_with_cache
 
 # 导入属性相关的模块
-from trainer import AttributeTrainer, load_attribute_models
 from model import AttributeEmbeddingModel, UserFusionModel, EnhancedUserEmbedding
+
+# 导入位置相关的模块
+from model import UserLocationEmbedding
 
 def set_random_seed(seed):
     """
@@ -126,10 +129,14 @@ def create_directories():
 def preprocess_data(data_path=None):
     """
     数据预处理
-    user_sequences: 用户访问序列
-    url_mappings: 域名到ID的映射
-    user_attributes: 用户属性数据
-    attribute_info: 属性信息
+    返回:
+        user_sequences: 用户访问序列
+        url_mappings: 域名到ID的映射
+        user_attributes: 用户属性数据
+        attribute_info: 属性信息
+        user_location_sequences: 用户位置序列
+        base_station_mappings: 基站到ID的映射
+        location_weights: 位置权重信息
     """
     print("="*50)
     print("开始数据预处理")
@@ -146,7 +153,7 @@ def preprocess_data(data_path=None):
             print("已加载处理后的数据")
         except:
             print("未找到处理后的数据，请提供原始数据路径")
-            return None, None, None, None
+            return None, None, None, None, None, None, None
     
     url_mappings = {
         'url_to_id': preprocessor.url_to_id,
@@ -171,7 +178,31 @@ def preprocess_data(data_path=None):
         except:
             print("  无法加载属性数据")
     
-    return user_sequences, url_mappings, user_attributes, attribute_info
+    # 加载位置数据（如果启用）
+    user_location_sequences = None
+    base_station_mappings = None
+    location_weights = None
+    if Config.ENABLE_LOCATION and preprocessor.location_processor:
+        try:
+            location_data = preprocessor.location_processor.load_processed_data(Config.PROCESSED_DATA_PATH)
+            if location_data:
+                user_location_sequences = location_data['user_sequences']
+                base_station_mappings = location_data['base_station_mappings']
+                location_weights = location_data['user_weights']
+                print(f"位置数据加载成功，用户数量: {len(user_location_sequences)}")
+                print(f"  位置用户数量: {len(user_location_sequences)}")
+                print(f"  基站数量: {len(base_station_mappings['base_station_to_id'])}")
+            else:
+                print("位置数据加载成功，用户数量: 0")
+                print("  位置用户数量: 0")
+                print("  基站数量: 0")
+        except Exception as e:
+            print(f"位置数据加载成功，用户数量: 0")
+            print(f"  位置用户数量: 0")
+            print(f"  基站数量: 0")
+            print(f"  无法加载位置数据: {e}")
+    
+    return user_sequences, url_mappings, user_attributes, attribute_info, user_location_sequences, base_station_mappings, location_weights
 
 def train_model(user_sequences, url_mappings, resume=False):
     """
@@ -331,6 +362,70 @@ def load_trained_model(model_path, vocab_size):
     
     return model
 
+def compute_location_embeddings(location_model, user_base_stations, base_station_mappings, location_processor=None, save_path=None):
+    """
+    计算用户位置嵌入
+    
+    Args:
+        location_model: 训练好的位置嵌入模型
+        user_base_stations: 用户基站连接数据 {user_id: {'base_stations': [...], 'weights': [...], 'total_duration': ...}}
+        base_station_mappings: 基站映射字典
+        location_processor: 位置数据处理器（用于特征处理）
+        save_path: 保存路径
+    
+    Returns:
+        用户位置嵌入字典
+    """
+    if not location_model or not user_base_stations:
+        return {}
+    
+    print("开始计算用户位置嵌入...")
+    
+    # 获取基站嵌入
+    base_station_embeddings = {}
+    
+    # 对于PyTorch模型，直接从模型权重获取嵌入
+    for bs_id in base_station_mappings['base_station_to_id'].keys():
+        idx = base_station_mappings['base_station_to_id'][bs_id]
+        if hasattr(location_model, 'in_embeddings'):
+            # Item2Vec和Node2Vec使用in_embeddings
+            embedding = location_model.in_embeddings.weight[idx].detach()
+            base_station_embeddings[bs_id] = embedding
+        elif hasattr(location_model, 'embeddings'):
+            # 其他模型可能使用embeddings
+            embedding = location_model.embeddings.weight[idx].detach()
+            base_station_embeddings[bs_id] = embedding
+        else:
+            # 如果模型结构不同，使用其他方法获取嵌入
+            # 这里可以根据具体模型结构调整
+            print(f"警告：无法从模型中获取基站 {bs_id} 的嵌入")
+            continue
+    
+    # 创建用户位置嵌入计算器
+    location_embedding_calculator = UserLocationEmbedding(
+        Config, base_station_embeddings, location_processor
+    )
+    
+    # 计算用户位置嵌入
+    user_location_embeddings = {}
+    for user_id, data in user_base_stations.items():
+        base_stations = data['base_stations']
+        weights = data['weights']
+        
+        # 计算位置嵌入
+        location_embedding = location_embedding_calculator(base_stations, weights)
+        user_location_embeddings[user_id] = location_embedding.detach().numpy()
+    
+    print(f"完成计算 {len(user_location_embeddings)} 个用户的位置嵌入")
+    
+    # 保存结果
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        np.save(save_path, user_location_embeddings)
+        print(f"位置嵌入已保存到: {save_path}")
+    
+    return user_location_embeddings
+
 def train_attribute_models(behavior_model, user_sequences, user_attributes, attribute_info, url_mappings):
     """
     训练属性模型
@@ -355,22 +450,35 @@ def train_attribute_models(behavior_model, user_sequences, user_attributes, attr
     return attribute_trainer.attribute_model, attribute_trainer.fusion_model
 
 def compute_enhanced_user_embeddings(behavior_model, attribute_model, fusion_model, 
-                                   user_sequences, user_attributes, url_mappings, attribute_info, save_path=None):
+                                   user_sequences, user_attributes, url_mappings, attribute_info, 
+                                   location_model=None, user_location_sequences=None, 
+                                   base_station_mappings=None, location_weights=None, 
+                                   location_processor=None, save_path=None):
     """
-    计算增强的用户嵌入向量（行为+属性）
+    计算增强的用户嵌入向量（行为+属性+位置）
     """
     if not Config.ENABLE_ATTRIBUTES or attribute_model is None or fusion_model is None:
         print("属性模型不可用，使用基础用户嵌入")
         return compute_user_embeddings(behavior_model, user_sequences, url_mappings, save_path)
     
     print("="*50)
-    print("计算增强用户嵌入向量（行为+属性）")
+    print("计算增强用户嵌入向量（行为+属性+位置）")
     print("="*50)
     
     # 创建增强用户嵌入计算器
     enhanced_user_embedding = EnhancedUserEmbedding(
-        behavior_model, attribute_model, fusion_model, 
-        user_sequences, user_attributes, url_mappings, attribute_info
+        behavior_model=behavior_model,
+        attribute_model=attribute_model,
+        fusion_model=fusion_model,
+        user_sequences=user_sequences,
+        user_attributes=user_attributes,
+        url_mappings=url_mappings,
+        attribute_info=attribute_info,
+        location_model=location_model,
+        user_location_sequences=user_location_sequences,
+        base_station_mappings=base_station_mappings,
+        location_weights=location_weights,
+        location_processor=location_processor
     )
     
     # 计算增强嵌入
@@ -455,13 +563,18 @@ def main():
     url_mappings = None
     user_attributes = None
     attribute_info = None
+    user_location_sequences = None
+    base_station_mappings = None
+    location_weights = None
     model = None
+    location_model = None
     attribute_model = None
     fusion_model = None
+    location_processor = None
     
     # 数据预处理
     if args.mode in ['preprocess', 'all']:
-        user_sequences, url_mappings, user_attributes, attribute_info = preprocess_data(Config.DATA_PATH) # 使用Config.DATA_PATH
+        user_sequences, url_mappings, user_attributes, attribute_info, user_location_sequences, base_station_mappings, location_weights = preprocess_data(Config.DATA_PATH) # 使用Config.DATA_PATH
         if user_sequences is None:
             print("数据预处理失败，程序退出")
             return
@@ -470,7 +583,7 @@ def main():
     # 确保从正确的PROCESSED_DATA_PATH加载
     if args.mode not in ['preprocess'] and user_sequences is None:
         print(f"尝试从 {Config.PROCESSED_DATA_PATH} 加载已处理数据...")
-        user_sequences, url_mappings, user_attributes, attribute_info = preprocess_data() # preprocessor内部会使用Config.PROCESSED_DATA_PATH
+        user_sequences, url_mappings, user_attributes, attribute_info, user_location_sequences, base_station_mappings, location_weights = preprocess_data() # preprocessor内部会使用Config.PROCESSED_DATA_PATH
         if user_sequences is None:
             print("无法加载数据，请确保已运行预处理或提供了正确的数据路径。程序退出")
             return
@@ -492,11 +605,73 @@ def main():
             print(f"未知的模型类型 (来自Config): {Config.MODEL_TYPE}")
             return
         
+        # 行为模型训练完成后，训练位置模型（如果启用）
+        if Config.ENABLE_LOCATION and model is not None:
+            from data_preprocessing import LocationProcessor
+            
+            # 创建位置处理器
+            location_processor = LocationProcessor(Config)
+            
+            # 加载基站特征数据
+            location_processor.load_base_station_features(Config.LOCATION_FEATURES_PATH)
+            
+            # 训练位置模型
+            location_model, base_station_mappings = train_location_model(
+                Config, location_processor
+            )
+            
+            # 计算用户位置嵌入
+            if location_model is not None:
+                user_base_stations = location_processor.process_user_base_stations(Config.LOCATION_DATA_PATH)
+                user_location_embeddings = compute_location_embeddings(
+                    location_model, user_base_stations, base_station_mappings, location_processor
+                )
+            else:
+                user_location_embeddings = {}
+        else:
+            location_processor = None
+            user_location_embeddings = {}
+            user_base_stations = {}
+        
         # 行为模型训练完成后，训练属性模型（如果启用）
         if Config.ENABLE_ATTRIBUTES and model is not None:
-            attribute_model, fusion_model = train_attribute_models(
-                model, user_sequences, user_attributes, attribute_info, url_mappings
+            # 为属性模型创建支持位置的融合模型
+            behavior_dim = Config.EMBEDDING_DIM
+            attribute_dim = Config.ATTRIBUTE_EMBEDDING_DIM
+            location_dim = Config.LOCATION_EMBEDDING_DIM if Config.ENABLE_LOCATION else None
+            
+            # 创建支持多模态的融合模型
+            fusion_model = UserFusionModel(
+                behavior_dim, attribute_dim, location_dim, Config
             )
+            
+            # 使用现有的属性训练器，但传入位置信息
+            attribute_trainer = AttributeTrainer(
+                behavior_model=model,
+                user_sequences=user_sequences,
+                user_attributes=user_attributes,
+                attribute_info=attribute_info,
+                url_mappings=url_mappings,
+                config=Config
+            )
+            
+            # 如果有位置信息，将其传递给训练器
+            if location_model is not None and user_location_embeddings:
+                attribute_trainer.location_model = location_model
+                attribute_trainer.user_location_sequences = user_base_stations
+                attribute_trainer.base_station_mappings = base_station_mappings
+                attribute_trainer.location_weights = user_location_embeddings
+                attribute_trainer.location_processor = location_processor
+                attribute_trainer.user_base_stations = user_base_stations
+            
+            # 设置多模态融合模型
+            attribute_trainer.fusion_model = fusion_model
+            
+            # 开始训练
+            attribute_trainer.train()
+            
+            attribute_model = attribute_trainer.attribute_model
+            fusion_model = attribute_trainer.fusion_model
     
     # 加载已训练的模型 (如果需要)
     # 确保从正确的MODEL_SAVE_PATH加载
@@ -581,12 +756,23 @@ def main():
     # 现在也为 'compute_embeddings' 模式启用
     if args.mode in ['all', 'compute_embeddings'] and model is not None and user_sequences is not None and url_mappings is not None:
         if Config.ENABLE_ATTRIBUTES and attribute_model is not None and fusion_model is not None and user_attributes is not None:
-            # 计算增强用户嵌入
+            # 计算增强用户嵌入（支持位置信息）
             enhanced_embeddings_filename = f'enhanced_user_embeddings_{Config.MODEL_TYPE}.pkl'
             enhanced_embeddings_path = os.path.join(Config.MODEL_SAVE_PATH, enhanced_embeddings_filename)
             enhanced_embeddings = compute_enhanced_user_embeddings(
-                model, attribute_model, fusion_model, user_sequences, user_attributes, 
-                url_mappings, attribute_info, enhanced_embeddings_path
+                behavior_model=model,
+                attribute_model=attribute_model,
+                fusion_model=fusion_model,
+                user_sequences=user_sequences,
+                user_attributes=user_attributes,
+                url_mappings=url_mappings,
+                attribute_info=attribute_info,
+                location_model=location_model,
+                user_location_sequences=user_location_sequences,
+                base_station_mappings=base_station_mappings,
+                location_weights=location_weights,
+                location_processor=location_processor,
+                save_path=enhanced_embeddings_path
             )
         else:
             # 计算基础用户嵌入
