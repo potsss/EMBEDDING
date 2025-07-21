@@ -8,9 +8,11 @@ import torch
 import numpy as np
 import random
 import json
+import pickle
 from datetime import datetime
 from config import Config, get_experiment_dir, get_experiment_paths
 from data_preprocessing import DataPreprocessor, LocationProcessor
+import pandas as pd
 from model import Item2Vec, UserEmbedding
 from trainer import Trainer, AttributeTrainer, train_location_model
 from trainer import load_attribute_models
@@ -48,9 +50,13 @@ def initialize_experiment_paths(experiment_name_override=None, mode=None):
     allow_existing = False
 
     if experiment_name_override:
-        # 如果通过命令行指定了实验名称，则强制重新计算，并且不查找已存在的非时间戳目录（除非新名称的目录已存在，此时会加时间戳）
+        # 如果通过命令行指定了实验名称
         Config.EXPERIMENT_NAME = experiment_name_override
-        allow_existing = False 
+        # 对于推理相关模式，允许使用已存在的目录
+        if mode in ['compute_new_users', 'visualize', 'compute_embeddings']:
+            allow_existing = True
+        else:
+            allow_existing = False 
     elif mode and mode not in ['preprocess', 'all']:
         # 如果是分步执行（非preprocess/all），且未指定新实验名，则尝试使用已存在的目录
         allow_existing = True
@@ -553,10 +559,12 @@ def compute_new_user_embeddings(behavior_model, attribute_model, fusion_model,
     
     print(f"加载了 {len(new_user_sequences)} 个新用户的行为数据")
     print(f"加载了 {len(new_user_attributes)} 个新用户的属性数据")
-    print(f"加载了 {len(new_user_location_data)} 个新用户的位置数据")
+    location_user_count = len(new_user_location_data.get('user_location_sequences', {}))
+    print(f"加载了 {location_user_count} 个新用户的位置数据")
     
     # 计算新用户向量
-    if Config.ENABLE_ATTRIBUTES and attribute_model is not None and fusion_model is not None:
+    if (Config.ENABLE_ATTRIBUTES and attribute_model is not None and fusion_model is not None 
+        and len(new_user_attributes) > 0):
         # 使用增强嵌入（行为+属性+位置）
         new_user_embeddings = compute_enhanced_user_embeddings(
             behavior_model=behavior_model,
@@ -650,7 +658,7 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
             print(f"加载新用户行为数据时出错: {e}")
     
     # 2. 加载新用户属性数据
-    if Config.ENABLE_ATTRIBUTES and os.path.exists(attribute_path):
+    if Config.ENABLE_ATTRIBUTES and attribute_path and os.path.exists(attribute_path):
         print(f"加载新用户属性数据: {attribute_path}")
         try:
             # 使用现有的属性处理逻辑
@@ -673,17 +681,9 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
                         
                         if attr_info_item['type'] == 'categorical':
                             # 对于类别属性，使用训练时的编码
-                            if hasattr(attr_info_item, 'encoder'):
-                                try:
-                                    encoded_value = attr_info_item['encoder'].transform([attr_value])[0]
-                                    user_attrs[attr_name] = encoded_value
-                                except ValueError:
-                                    # 如果是未见过的类别，使用默认值或跳过
-                                    print(f"警告: 用户 {user_id} 的属性 {attr_name} 值 '{attr_value}' 在训练时未见过，将跳过")
-                                    continue
-                            else:
-                                # 如果没有编码器信息，直接使用原值（需要确保与训练时一致）
-                                user_attrs[attr_name] = attr_value
+                            # 由于训练数据中所有类别属性都被编码为0（Other类别），
+                            # 新用户的类别属性也使用0
+                            user_attrs[attr_name] = 0
                         else:
                             # 数值属性
                             user_attrs[attr_name] = float(attr_value)
@@ -698,7 +698,7 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
             print(f"加载新用户属性数据时出错: {e}")
     
     # 3. 加载新用户位置数据
-    if Config.ENABLE_LOCATION and os.path.exists(location_path) and base_station_mappings:
+    if Config.ENABLE_LOCATION and location_path and os.path.exists(location_path) and base_station_mappings:
         print(f"加载新用户位置数据: {location_path}")
         try:
             # 使用位置处理器
@@ -733,8 +733,9 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
                     
                     # 计算权重（归一化）
                     total_duration = sum(valid_weights)
-                    normalized_weights = {bs_id: weight/total_duration 
-                                        for bs_id, weight in zip(valid_stations, valid_weights)}
+                    # 注意：这里使用基站ID而不是基站名称作为键
+                    normalized_weights = {base_station_to_id[bs_id]: weight/total_duration 
+                                        for bs_id, weight in base_station_durations.items() if bs_id in base_station_to_id}
                     location_weights[user_id] = normalized_weights
             
             result['user_location_data'] = {
@@ -747,6 +748,36 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
             print(f"加载新用户位置数据时出错: {e}")
     
     return result
+
+def load_training_config(experiment_dir):
+    """
+    加载训练时保存的配置，用于推理阶段
+    """
+    config_path = os.path.join(experiment_dir, 'experiment_config.json')
+    if os.path.exists(config_path):
+        print(f"加载训练时的配置: {config_path}")
+        with open(config_path, 'r', encoding='utf-8') as f:
+            saved_config = json.load(f)
+        
+        # 更新Config类的属性
+        if 'config' in saved_config:
+            training_config = saved_config['config']
+            for key, value in training_config.items():
+                if hasattr(Config, key):
+                    # 跳过路径相关的配置，因为这些会在initialize_experiment_paths中设置
+                    if key.endswith('_PATH') or key.endswith('_DIR'):
+                        continue
+                    setattr(Config, key, value)
+                    print(f"  更新配置: {key} = {value}")
+        
+        # 重新设置设备对象
+        Config.DEVICE_OBJ = torch.device(Config.DEVICE)
+        
+        print("训练时配置加载完成")
+        return True
+    else:
+        print(f"警告：未找到训练时的配置文件: {config_path}")
+        return False
 
 def main():
     """
@@ -775,10 +806,15 @@ def main():
     # 1. 初始化实验路径 (这是关键改动)
     initialize_experiment_paths(experiment_name_override=args.experiment_name, mode=args.mode)
     
-    # 2. 设置随机种子
+    # 2. 对于推理相关模式，加载训练时的配置
+    if args.mode in ['compute_new_users', 'visualize', 'compute_embeddings']:
+        experiment_dir = get_experiment_dir(Config.EXPERIMENT_NAME)
+        load_training_config(experiment_dir)
+    
+    # 3. 设置随机种子
     set_random_seed(Config.RANDOM_SEED)
     
-    # 3. 创建目录 (现在它会使用initialize_experiment_paths确定的路径)
+    # 4. 创建目录 (现在它会使用initialize_experiment_paths确定的路径)
     create_directories()
     
     # 更新 DATA_PATH 如果通过命令行指定 (通常用于 preprocess)
@@ -865,9 +901,6 @@ def main():
         
         # 行为模型训练完成后，训练位置模型（如果启用）
         if Config.ENABLE_LOCATION and model is not None:
-            from data_preprocessing import LocationProcessor
-            
-            # 创建位置处理器
             location_processor = LocationProcessor(Config)
             
             # 加载基站特征数据
@@ -1048,13 +1081,104 @@ def main():
         print("新用户向量计算模式")
         print("="*50)
         
-        # 检查必需的模型和映射是否可用
+        # 如果模型未加载，尝试加载已训练的模型
         if model is None or url_mappings is None:
-            print("错误：缺少必需的模型或URL映射。")
-            print("请确保：")
-            print("1. 已运行过完整的训练流程（mode='all'）")
-            print("2. 或者通过 --model_path 指定已训练的模型路径")
-            return
+            print("尝试加载已训练的模型...")
+            
+            # 加载URL映射
+            url_mappings_path = os.path.join(Config.PROCESSED_DATA_PATH, "url_mappings.pkl")
+            if os.path.exists(url_mappings_path):
+                with open(url_mappings_path, 'rb') as f:
+                    url_mappings = pickle.load(f)
+                print(f"URL映射加载成功，包含 {len(url_mappings['url_to_id'])} 个URL")
+            else:
+                print(f"错误：未找到URL映射文件 {url_mappings_path}")
+                return
+            
+            # 加载行为模型
+            behavior_model_path = os.path.join(Config.MODEL_SAVE_PATH, f"best_{Config.MODEL_TYPE}_model.pth")
+            if not os.path.exists(behavior_model_path):
+                behavior_model_path = os.path.join(Config.MODEL_SAVE_PATH, f"{Config.MODEL_TYPE}_model.pth")
+            
+            if os.path.exists(behavior_model_path):
+                vocab_size = len(url_mappings['url_to_id'])
+                
+                if Config.MODEL_TYPE == 'item2vec':
+                    model = Item2Vec(vocab_size, Config.EMBEDDING_DIM)
+                else:  # node2vec
+                    model = Node2Vec(vocab_size, Config.EMBEDDING_DIM)
+                
+                # 加载模型权重
+                checkpoint = torch.load(behavior_model_path, map_location='cpu')
+                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                else:
+                    model.load_state_dict(checkpoint)
+                
+                model.eval()
+                print(f"行为模型 ({Config.MODEL_TYPE}) 加载成功")
+            else:
+                print(f"错误：未找到行为模型文件 {behavior_model_path}")
+                return
+            
+            # 加载属性相关模型（如果启用）
+            if Config.ENABLE_ATTRIBUTES:
+                attribute_info_path = os.path.join(Config.PROCESSED_DATA_PATH, "attribute_info.pkl")
+                if os.path.exists(attribute_info_path):
+                    with open(attribute_info_path, 'rb') as f:
+                        attribute_info = pickle.load(f)
+                    print("属性信息加载成功")
+                    
+                    # 加载属性模型
+                    attribute_model_path = os.path.join(Config.MODEL_SAVE_PATH, "best_attribute_models.pth")
+                    if not os.path.exists(attribute_model_path):
+                        attribute_model_path = os.path.join(Config.MODEL_SAVE_PATH, "attribute_models.pth")
+                    
+                    if os.path.exists(attribute_model_path):
+                        attribute_model, fusion_model = load_attribute_models(attribute_model_path, attribute_info)
+                        print("属性模型和融合模型加载成功")
+                    else:
+                        print("警告：未找到属性模型文件，将跳过属性向量计算")
+                else:
+                    print("警告：未找到属性信息文件，将跳过属性向量计算")
+            
+            # 加载位置相关模型（如果启用）
+            if Config.ENABLE_LOCATION:
+                # 加载基站映射
+                base_station_mappings_path = os.path.join(Config.PROCESSED_DATA_PATH, "base_station_mappings.pkl")
+                if os.path.exists(base_station_mappings_path):
+                    with open(base_station_mappings_path, 'rb') as f:
+                        base_station_mappings = pickle.load(f)
+                    print(f"基站映射加载成功，包含 {len(base_station_mappings['base_station_to_id'])} 个基站")
+                    
+                    # 加载位置模型
+                    location_model_path = os.path.join(Config.MODEL_SAVE_PATH, f"location_{Config.LOCATION_MODEL_TYPE}_model.pth")
+                    if os.path.exists(location_model_path):
+                        vocab_size = len(base_station_mappings['base_station_to_id'])
+                        
+                        if Config.LOCATION_MODEL_TYPE == 'item2vec':
+                            location_model = Item2Vec(vocab_size, Config.LOCATION_EMBEDDING_DIM)
+                        else:  # node2vec
+                            location_model = Node2Vec(vocab_size, Config.LOCATION_EMBEDDING_DIM)
+                        
+                        # 加载位置模型权重
+                        checkpoint = torch.load(location_model_path, map_location='cpu')
+                        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                            location_model.load_state_dict(checkpoint['model_state_dict'])
+                        else:
+                            location_model.load_state_dict(checkpoint)
+                        
+                        location_model.eval()
+                        print(f"位置模型 ({Config.LOCATION_MODEL_TYPE}) 加载成功")
+                        
+                        # 创建位置处理器
+                        location_processor = LocationProcessor(Config)
+                        if Config.BASE_STATION_FEATURE_MODE != "none":
+                            location_processor.load_base_station_features(Config.LOCATION_FEATURES_PATH)
+                    else:
+                        print(f"警告：未找到位置模型文件 {location_model_path}")
+                else:
+                    print("警告：未找到基站映射文件，将跳过位置向量计算")
         
         # 计算新用户向量
         new_user_embeddings_filename = f'new_user_embeddings_{Config.MODEL_TYPE}.pkl'

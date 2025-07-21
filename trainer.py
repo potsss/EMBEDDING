@@ -857,7 +857,8 @@ def load_attribute_models(model_path, attribute_info, config=Config):
     
     behavior_dim = config.EMBEDDING_DIM
     attribute_dim = config.ATTRIBUTE_EMBEDDING_DIM
-    fusion_model = UserFusionModel(behavior_dim, attribute_dim, config)
+    location_dim = config.LOCATION_EMBEDDING_DIM if config.ENABLE_LOCATION else None
+    fusion_model = UserFusionModel(behavior_dim, attribute_dim, location_dim, config)
     fusion_model.load_state_dict(checkpoint['fusion_model_state_dict'])
     
     return attribute_model, fusion_model
@@ -1299,6 +1300,26 @@ def train_location_model(config, location_processor):
         'base_station_to_id': base_station_to_id,
         'id_to_base_station': id_to_base_station
     }
+    
+    # 保存位置模型
+    model_save_path = os.path.join(config.MODEL_SAVE_PATH, f"location_{config.LOCATION_MODEL_TYPE}_model.pth")
+    
+    # 保存模型状态
+    model_state = {
+        'model_state_dict': model.state_dict(),
+        'vocab_size': len(all_base_stations),
+        'embedding_dim': config.LOCATION_EMBEDDING_DIM,
+        'model_type': config.LOCATION_MODEL_TYPE
+    }
+    
+    torch.save(model_state, model_save_path)
+    print(f"位置模型已保存到: {model_save_path}")
+    
+    # 保存基站映射
+    mappings_save_path = os.path.join(config.PROCESSED_DATA_PATH, "base_station_mappings.pkl")
+    with open(mappings_save_path, 'wb') as f:
+        pickle.dump(base_station_mappings, f)
+    print(f"基站映射已保存到: {mappings_save_path}")
     
     print("位置嵌入模型训练完成")
     return model, base_station_mappings

@@ -53,6 +53,9 @@ def load_trained_models(experiment_path):
         
         # 加载行为模型
         behavior_model_path = os.path.join(model_save_path, f"best_{Config.MODEL_TYPE}_model.pth")
+        # 如果best模型不存在，尝试加载普通模型
+        if not os.path.exists(behavior_model_path):
+            behavior_model_path = os.path.join(model_save_path, f"{Config.MODEL_TYPE}_model.pth")
         if os.path.exists(behavior_model_path):
             vocab_size = len(result['url_mappings']['url_to_id'])
             
@@ -61,7 +64,13 @@ def load_trained_models(experiment_path):
             else:  # node2vec
                 model = Node2Vec(vocab_size, Config.EMBEDDING_DIM)
             
-            model.load_state_dict(torch.load(behavior_model_path, map_location='cpu'))
+            # 加载模型，处理不同的保存格式
+            checkpoint = torch.load(behavior_model_path, map_location='cpu')
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+            
             model.eval()
             result['behavior_model'] = model
             print(f"行为模型 ({Config.MODEL_TYPE}) 加载成功")
@@ -98,6 +107,12 @@ def load_trained_models(experiment_path):
                 
                 # 加载位置模型
                 location_model_path = os.path.join(model_save_path, f"best_location_{Config.LOCATION_MODEL_TYPE}_model.pth")
+                # 如果best位置模型不存在，尝试加载普通位置模型
+                if not os.path.exists(location_model_path):
+                    location_model_path = os.path.join(model_save_path, f"location_{Config.LOCATION_MODEL_TYPE}_model.pth")
+                # 如果还是不存在，尝试直接使用模型类型名称
+                if not os.path.exists(location_model_path):
+                    location_model_path = os.path.join(model_save_path, f"{Config.LOCATION_MODEL_TYPE}_model.pth")
                 if os.path.exists(location_model_path):
                     vocab_size = len(result['base_station_mappings']['base_station_to_id'])
                     
@@ -106,7 +121,13 @@ def load_trained_models(experiment_path):
                     else:  # node2vec
                         location_model = Node2Vec(vocab_size, Config.LOCATION_EMBEDDING_DIM)
                     
-                    location_model.load_state_dict(torch.load(location_model_path, map_location='cpu'))
+                    # 加载位置模型，处理不同的保存格式
+                    checkpoint = torch.load(location_model_path, map_location='cpu')
+                    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                        location_model.load_state_dict(checkpoint['model_state_dict'])
+                    else:
+                        location_model.load_state_dict(checkpoint)
+                    
                     location_model.eval()
                     result['location_model'] = location_model
                     print(f"位置模型 ({Config.LOCATION_MODEL_TYPE}) 加载成功")
@@ -118,6 +139,8 @@ def load_trained_models(experiment_path):
                     result['location_processor'].load_base_station_features(Config.LOCATION_FEATURES_PATH)
             else:
                 print("警告：未找到基站映射文件，将跳过位置向量计算")
+                # 关闭位置功能
+                Config.ENABLE_LOCATION = False
         
         return result
         
@@ -152,6 +175,9 @@ def main():
     experiment_paths = get_experiment_paths(args.experiment_name, allow_existing_without_timestamp=True)
     for key, value in experiment_paths.items():
         setattr(Config, key, value)
+    
+    # 初始化设备对象
+    Config.DEVICE_OBJ = torch.device(Config.DEVICE)
     
     # 检查实验目录是否存在
     experiment_dir = os.path.dirname(Config.PROCESSED_DATA_PATH)

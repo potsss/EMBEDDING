@@ -58,7 +58,7 @@ class Config:
     包含所有模型训练和评估的参数
     """
     # 实验配置
-    EXPERIMENT_NAME = "three_vector_test"
+    EXPERIMENT_NAME = "user_embedding_experiment"
     
     # 基础路径配置
     BASE_DIR = BASE_DIR
