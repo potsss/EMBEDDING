@@ -69,6 +69,11 @@ class Config:
     DATA_PATH = "data/test_user_behavior.csv"  # 使用我们创建的测试数据
     ATTRIBUTE_DATA_PATH = "data/sample_user_attributes.tsv"
     
+    # 新用户数据配置（用于推理阶段）
+    NEW_USER_BEHAVIOR_PATH = "data/new_user_behavior.csv"  # 新用户行为数据
+    NEW_USER_ATTRIBUTE_PATH = "data/new_user_attributes.tsv"  # 新用户属性数据
+    NEW_USER_LOCATION_PATH = "data/new_user_base_stations.tsv"  # 新用户位置数据
+    
     # 行为向量相关配置
     MODEL_TYPE = "node2vec"  # 可选 "item2vec" 或 "node2vec"
     EMBEDDING_DIM = 128

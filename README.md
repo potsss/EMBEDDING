@@ -199,7 +199,61 @@ python main.py --mode all
 python main.py --mode all
 ```
 
-### 3. 命令行参数
+### 3. 新用户向量计算（推理阶段）
+
+训练完成后，可以为未参与训练的新用户计算向量表示：
+
+#### 方法一：使用独立脚本（推荐）
+
+```bash
+# 使用独立的新用户向量计算脚本
+python compute_new_users.py \
+    --experiment_name three_vector_test \
+    --new_user_behavior_path data/new_user_behavior.csv \
+    --new_user_attribute_path data/new_user_attributes.tsv \
+    --new_user_location_path data/new_user_base_stations.tsv \
+    --output_path results/new_user_vectors.pkl
+```
+
+#### 方法二：使用主程序
+
+```bash
+# 使用主程序的新用户计算模式
+python main.py --mode compute_new_users \
+    --experiment_name three_vector_test \
+    --new_user_behavior_path data/new_user_behavior.csv \
+    --new_user_attribute_path data/new_user_attributes.tsv \
+    --new_user_location_path data/new_user_base_stations.tsv
+```
+
+#### 新用户数据格式
+
+**新用户行为数据** (`data/new_user_behavior.csv`)：
+```csv
+user_id,url,timestamp_str,weight
+new_user_001,example.com,2023-06-01,1.5
+new_user_001,github.com,2023-06-01,2.0
+```
+
+**新用户属性数据** (`data/new_user_attributes.tsv`)：
+```tsv
+user_id	age	gender	city	device_type	education_level
+new_user_001	28	Male	Beijing	smartphone	Bachelor
+```
+
+**新用户位置数据** (`data/new_user_base_stations.tsv`)：
+```tsv
+user_id	base_station_id	timestamp_str	duration
+new_user_001	BS_001	2023-06-01 08:00:00	1800
+```
+
+**重要说明**：
+- 新用户访问的URL必须在训练数据中出现过
+- 新用户的属性值必须在训练数据的取值范围内
+- 新用户连接的基站必须在训练数据中出现过
+- 系统会自动跳过无法识别的URL、属性值或基站
+
+### 4. 命令行参数
 
 - `--mode`: 运行模式
   - `preprocess`: 仅数据预处理
@@ -216,7 +270,7 @@ python main.py --mode all
 - `--no_cache`: 禁用随机游走缓存
 - `--force_regenerate`: 强制重新生成随机游走
 
-### 4. 配置参数
+### 5. 配置参数
 
 在 `config.py` 中可以调整各种参数：
 

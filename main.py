@@ -495,13 +495,266 @@ def compute_enhanced_user_embeddings(behavior_model, attribute_model, fusion_mod
     
     return enhanced_embeddings
 
+def compute_new_user_embeddings(behavior_model, attribute_model, fusion_model,
+                              url_mappings, attribute_info, base_station_mappings=None,
+                              location_model=None, location_processor=None,
+                              new_user_behavior_path=None, new_user_attribute_path=None, 
+                              new_user_location_path=None, save_path=None):
+    """
+    为新用户计算向量表示
+    
+    Args:
+        behavior_model: 训练好的行为模型
+        attribute_model: 训练好的属性模型
+        fusion_model: 训练好的融合模型
+        url_mappings: URL映射字典
+        attribute_info: 属性信息字典
+        base_station_mappings: 基站映射字典
+        location_model: 训练好的位置模型
+        location_processor: 位置数据处理器
+        new_user_behavior_path: 新用户行为数据路径
+        new_user_attribute_path: 新用户属性数据路径
+        new_user_location_path: 新用户位置数据路径
+        save_path: 保存路径
+    
+    Returns:
+        新用户向量字典
+    """
+    print("="*50)
+    print("计算新用户向量表示")
+    print("="*50)
+    
+    # 使用配置文件中的默认路径
+    if new_user_behavior_path is None:
+        new_user_behavior_path = Config.NEW_USER_BEHAVIOR_PATH
+    if new_user_attribute_path is None:
+        new_user_attribute_path = Config.NEW_USER_ATTRIBUTE_PATH
+    if new_user_location_path is None:
+        new_user_location_path = Config.NEW_USER_LOCATION_PATH
+    
+    # 加载新用户数据
+    new_user_data = load_new_user_data(
+        behavior_path=new_user_behavior_path,
+        attribute_path=new_user_attribute_path,
+        location_path=new_user_location_path,
+        url_mappings=url_mappings,
+        attribute_info=attribute_info,
+        base_station_mappings=base_station_mappings,
+        location_processor=location_processor
+    )
+    
+    if not new_user_data:
+        print("没有找到新用户数据")
+        return {}
+    
+    new_user_sequences = new_user_data['user_sequences']
+    new_user_attributes = new_user_data['user_attributes']
+    new_user_location_data = new_user_data['user_location_data']
+    
+    print(f"加载了 {len(new_user_sequences)} 个新用户的行为数据")
+    print(f"加载了 {len(new_user_attributes)} 个新用户的属性数据")
+    print(f"加载了 {len(new_user_location_data)} 个新用户的位置数据")
+    
+    # 计算新用户向量
+    if Config.ENABLE_ATTRIBUTES and attribute_model is not None and fusion_model is not None:
+        # 使用增强嵌入（行为+属性+位置）
+        new_user_embeddings = compute_enhanced_user_embeddings(
+            behavior_model=behavior_model,
+            attribute_model=attribute_model,
+            fusion_model=fusion_model,
+            user_sequences=new_user_sequences,
+            user_attributes=new_user_attributes,
+            url_mappings=url_mappings,
+            attribute_info=attribute_info,
+            location_model=location_model,
+            user_location_sequences=new_user_location_data.get('user_location_sequences'),
+            base_station_mappings=base_station_mappings,
+            location_weights=new_user_location_data.get('location_weights'),
+            location_processor=location_processor,
+            save_path=None  # 暂时不保存，最后统一保存
+        )
+    else:
+        # 仅使用行为嵌入
+        new_user_embeddings = compute_user_embeddings(
+            model=behavior_model,
+            user_sequences=new_user_sequences,
+            url_mappings=url_mappings,
+            save_path=None
+        )
+    
+    print(f"成功计算 {len(new_user_embeddings)} 个新用户的向量表示")
+    
+    # 保存结果
+    if save_path:
+        import pickle
+        with open(save_path, 'wb') as f:
+            pickle.dump(new_user_embeddings, f)
+        print(f"新用户向量已保存到: {save_path}")
+    
+    return new_user_embeddings
+
+def load_new_user_data(behavior_path, attribute_path, location_path,
+                      url_mappings, attribute_info, base_station_mappings=None, 
+                      location_processor=None):
+    """
+    加载新用户的所有数据
+    
+    Args:
+        behavior_path: 新用户行为数据路径
+        attribute_path: 新用户属性数据路径
+        location_path: 新用户位置数据路径
+        url_mappings: URL映射字典
+        attribute_info: 属性信息字典
+        base_station_mappings: 基站映射字典
+        location_processor: 位置数据处理器
+    
+    Returns:
+        包含所有新用户数据的字典
+    """
+    result = {
+        'user_sequences': {},
+        'user_attributes': {},
+        'user_location_data': {}
+    }
+    
+    # 1. 加载新用户行为数据
+    if os.path.exists(behavior_path):
+        print(f"加载新用户行为数据: {behavior_path}")
+        try:
+            # 使用现有的数据预处理器
+            preprocessor = DataPreprocessor(Config)
+            
+            # 直接加载并处理行为数据
+            df = pd.read_csv(behavior_path)
+            print(f"新用户行为数据形状: {df.shape}")
+            
+            # 处理行为序列，但只保留在训练集中出现过的URL
+            user_sequences = {}
+            url_to_id = url_mappings['url_to_id']
+            
+            # 按用户分组处理
+            for user_id, group in df.groupby('user_id'):
+                sequence = []
+                for _, row in group.iterrows():
+                    url = row['url']
+                    if url in url_to_id:  # 只处理训练时见过的URL
+                        sequence.append(url_to_id[url])
+                
+                if sequence:  # 只保留有有效URL的用户
+                    user_sequences[user_id] = sequence
+            
+            result['user_sequences'] = user_sequences
+            print(f"成功处理 {len(user_sequences)} 个新用户的行为序列")
+            
+        except Exception as e:
+            print(f"加载新用户行为数据时出错: {e}")
+    
+    # 2. 加载新用户属性数据
+    if Config.ENABLE_ATTRIBUTES and os.path.exists(attribute_path):
+        print(f"加载新用户属性数据: {attribute_path}")
+        try:
+            # 使用现有的属性处理逻辑
+            preprocessor = DataPreprocessor(Config)
+            
+            # 加载属性数据
+            attr_df = pd.read_csv(attribute_path, sep='\t')
+            print(f"新用户属性数据形状: {attr_df.shape}")
+            
+            # 处理属性数据，使用训练时的编码器
+            user_attributes = {}
+            
+            for _, row in attr_df.iterrows():
+                user_id = row['user_id']
+                user_attrs = {}
+                
+                for attr_name, attr_info_item in attribute_info.items():
+                    if attr_name in row:
+                        attr_value = row[attr_name]
+                        
+                        if attr_info_item['type'] == 'categorical':
+                            # 对于类别属性，使用训练时的编码
+                            if hasattr(attr_info_item, 'encoder'):
+                                try:
+                                    encoded_value = attr_info_item['encoder'].transform([attr_value])[0]
+                                    user_attrs[attr_name] = encoded_value
+                                except ValueError:
+                                    # 如果是未见过的类别，使用默认值或跳过
+                                    print(f"警告: 用户 {user_id} 的属性 {attr_name} 值 '{attr_value}' 在训练时未见过，将跳过")
+                                    continue
+                            else:
+                                # 如果没有编码器信息，直接使用原值（需要确保与训练时一致）
+                                user_attrs[attr_name] = attr_value
+                        else:
+                            # 数值属性
+                            user_attrs[attr_name] = float(attr_value)
+                
+                if user_attrs:
+                    user_attributes[user_id] = user_attrs
+            
+            result['user_attributes'] = user_attributes
+            print(f"成功处理 {len(user_attributes)} 个新用户的属性数据")
+            
+        except Exception as e:
+            print(f"加载新用户属性数据时出错: {e}")
+    
+    # 3. 加载新用户位置数据
+    if Config.ENABLE_LOCATION and os.path.exists(location_path) and base_station_mappings:
+        print(f"加载新用户位置数据: {location_path}")
+        try:
+            # 使用位置处理器
+            if location_processor is None:
+                location_processor = LocationProcessor(Config)
+            
+            # 加载位置数据
+            location_df = pd.read_csv(location_path, sep='\t')
+            print(f"新用户位置数据形状: {location_df.shape}")
+            
+            # 处理位置数据
+            user_location_sequences = {}
+            location_weights = {}
+            base_station_to_id = base_station_mappings['base_station_to_id']
+            
+            for user_id, group in location_df.groupby('user_id'):
+                # 计算每个基站的权重（基于停留时间）
+                base_station_durations = group.groupby('base_station_id')['duration'].sum()
+                
+                # 只保留训练时见过的基站
+                valid_stations = []
+                valid_weights = []
+                
+                for bs_id, duration in base_station_durations.items():
+                    if bs_id in base_station_to_id:
+                        valid_stations.append(base_station_to_id[bs_id])
+                        valid_weights.append(duration)
+                
+                if len(valid_stations) >= Config.LOCATION_MIN_CONNECTIONS:
+                    # 生成位置序列（按时间排序）
+                    user_location_sequences[user_id] = valid_stations
+                    
+                    # 计算权重（归一化）
+                    total_duration = sum(valid_weights)
+                    normalized_weights = {bs_id: weight/total_duration 
+                                        for bs_id, weight in zip(valid_stations, valid_weights)}
+                    location_weights[user_id] = normalized_weights
+            
+            result['user_location_data'] = {
+                'user_location_sequences': user_location_sequences,
+                'location_weights': location_weights
+            }
+            print(f"成功处理 {len(user_location_sequences)} 个新用户的位置数据")
+            
+        except Exception as e:
+            print(f"加载新用户位置数据时出错: {e}")
+    
+    return result
+
 def main():
     """
     主函数
     """
     parser = argparse.ArgumentParser(description='Item2Vec/Node2Vec用户表示向量训练项目')
-    parser.add_argument('--mode', type=str, choices=['preprocess', 'train', 'visualize', 'compute_embeddings', 'all'], 
-                       default='all', help='运行模式 (preprocess, train, visualize, compute_embeddings, all)')
+    parser.add_argument('--mode', type=str, choices=['preprocess', 'train', 'visualize', 'compute_embeddings', 'compute_new_users', 'all'], 
+                       default='all', help='运行模式 (preprocess, train, visualize, compute_embeddings, compute_new_users, all)')
     parser.add_argument('--data_path', type=str, help='原始数据路径 (例如: data/user_behavior.csv)')
     parser.add_argument('--model_path', type=str, help='已训练模型的路径 (用于visualize/compute_embeddings模式)')
     parser.add_argument('--resume', action='store_true', help='从最新的检查点恢复训练')
@@ -511,6 +764,11 @@ def main():
     parser.add_argument('--force_regenerate', action='store_true', help='强制重新生成随机游走（忽略缓存）')
     parser.add_argument('--enable_attributes', action='store_true', help='启用属性向量训练')
     parser.add_argument('--attribute_data_path', type=str, help='用户属性数据文件路径')
+    
+    # 新用户向量计算相关参数
+    parser.add_argument('--new_user_behavior_path', type=str, help='新用户行为数据路径')
+    parser.add_argument('--new_user_attribute_path', type=str, help='新用户属性数据路径')
+    parser.add_argument('--new_user_location_path', type=str, help='新用户位置数据路径')
     
     args = parser.parse_args()
     
@@ -783,6 +1041,44 @@ def main():
         print("模型、用户序列或URL映射未准备好，无法计算用户嵌入。请确保：")
         print("1. 已运行数据预处理。")
         print("2. 已有训练好的模型（或通过 --model_path 指定）。")
+    
+    # 新用户向量计算模式
+    elif args.mode == 'compute_new_users':
+        print("="*50)
+        print("新用户向量计算模式")
+        print("="*50)
+        
+        # 检查必需的模型和映射是否可用
+        if model is None or url_mappings is None:
+            print("错误：缺少必需的模型或URL映射。")
+            print("请确保：")
+            print("1. 已运行过完整的训练流程（mode='all'）")
+            print("2. 或者通过 --model_path 指定已训练的模型路径")
+            return
+        
+        # 计算新用户向量
+        new_user_embeddings_filename = f'new_user_embeddings_{Config.MODEL_TYPE}.pkl'
+        new_user_embeddings_path = os.path.join(Config.MODEL_SAVE_PATH, new_user_embeddings_filename)
+        
+        new_user_embeddings = compute_new_user_embeddings(
+            behavior_model=model,
+            attribute_model=attribute_model,
+            fusion_model=fusion_model,
+            url_mappings=url_mappings,
+            attribute_info=attribute_info,
+            base_station_mappings=base_station_mappings,
+            location_model=location_model,
+            location_processor=location_processor,
+            new_user_behavior_path=args.new_user_behavior_path,
+            new_user_attribute_path=args.new_user_attribute_path,
+            new_user_location_path=args.new_user_location_path,
+            save_path=new_user_embeddings_path
+        )
+        
+        if new_user_embeddings:
+            print(f"新用户向量计算完成！共计算了 {len(new_user_embeddings)} 个新用户的向量")
+        else:
+            print("未能计算任何新用户向量，请检查数据文件是否存在且格式正确")
     
     print("="*50)
     print("程序执行完成！")
