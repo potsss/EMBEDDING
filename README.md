@@ -96,17 +96,13 @@ python main.py --mode train --experiment_name my_experiment --disable_attributes
 
 ### 3. 新用户向量计算
 
-#### 方法1: 使用主程序（推荐）
+
 ```bash
 python main.py --mode compute_new_users --experiment_name my_experiment
 ```
 
-#### 方法2: 使用独立脚本
-```bash
-python compute_new_users.py --experiment_path experiments/my_experiment
-```
 
-**🆕 新增功能**: 在计算新用户向量时，系统会：
+ 在计算新用户向量时，系统会：
 1. **自动过滤数据**: 基于训练时保存的实体记录，过滤掉新用户数据中不存在的URL和基站
 2. **生成兼容性报告**: 自动生成详细的数据兼容性报告并保存为JSON文件
 3. **提供过滤统计**: 显示过滤了多少记录，哪些实体是未知的
@@ -251,31 +247,3 @@ A:
 1. 检查新用户数据的URL和基站ID是否与训练数据一致
 2. 考虑扩充训练数据集，包含更多的URL和基站
 3. 使用数据映射，将未知实体映射到已知的相似实体
-
-## 📝 更新日志
-
-### v2.1.0 (最新)
-- ✅ 新增自动数据过滤机制，避免未知实体导致的错误
-- ✅ 集成兼容性报告生成，自动保存为JSON格式
-- ✅ 新增独立的数据兼容性检查工具 `check_new_user_data.py`
-- ✅ 优化过滤统计和报告展示，提供详细的兼容性评估
-- ✅ 完善README文档和使用说明
-- ✅ 添加兼容性评级系统和改进建议
-
-### v2.0.0
-- ✅ 完整的多模态用户嵌入系统
-- ✅ 支持Node2Vec和Item2Vec两种模型
-- ✅ 新用户向量计算功能
-- ✅ 实验管理系统
-
-## 📄 许可证
-
-本项目采用 MIT 许可证。
-
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request来改进项目！
-
----
-
-如有任何问题，请查看兼容性报告或联系项目维护者。
