@@ -39,6 +39,55 @@ def set_random_seed(seed):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
+def save_training_entities(url_mappings, base_station_mappings, processed_data_path):
+    """
+    保存训练时的实体记录，用于新用户推理时的过滤
+    
+    Args:
+        url_mappings: URL映射字典
+        base_station_mappings: 基站映射字典（可选）
+        processed_data_path: 处理数据保存路径
+    """
+    training_entities = {
+        'urls': set(url_mappings['url_to_id'].keys()),
+        'url_to_id': url_mappings['url_to_id'],
+        'id_to_url': url_mappings['id_to_url']
+    }
+    
+    # 添加基站信息（如果可用）
+    if base_station_mappings:
+        training_entities['base_stations'] = set(base_station_mappings['base_station_to_id'].keys())
+        training_entities['base_station_to_id'] = base_station_mappings['base_station_to_id']
+        training_entities['id_to_base_station'] = base_station_mappings['id_to_base_station']
+    
+    # 保存到文件
+    entities_path = os.path.join(processed_data_path, 'training_entities.pkl')
+    with open(entities_path, 'wb') as f:
+        pickle.dump(training_entities, f)
+    
+    print(f"训练实体记录已保存: {entities_path}")
+    print(f"  训练URL数量: {len(training_entities['urls'])}")
+    if base_station_mappings:
+        print(f"  训练基站数量: {len(training_entities['base_stations'])}")
+
+def load_training_entities(processed_data_path):
+    """
+    加载训练时的实体记录
+    
+    Args:
+        processed_data_path: 处理数据路径
+        
+    Returns:
+        训练实体记录字典
+    """
+    entities_path = os.path.join(processed_data_path, 'training_entities.pkl')
+    if os.path.exists(entities_path):
+        with open(entities_path, 'rb') as f:
+            return pickle.load(f)
+    else:
+        print(f"警告：未找到训练实体记录文件: {entities_path}")
+        return None
+
 def initialize_experiment_paths(experiment_name_override=None, mode=None):
     """
     初始化实验相关的路径，并设置到Config类上。
@@ -170,6 +219,9 @@ def preprocess_data(data_path=None):
     print(f"  用户数量: {len(user_sequences)}")
     print(f"  物品数量: {len(url_mappings['url_to_id'])}")
     
+    # 保存训练实体记录（在属性和位置数据加载后进行）
+    # 这里先声明，后面会在所有数据加载完成后调用
+    
     # 加载属性数据（如果启用）
     user_attributes = None
     attribute_info = None
@@ -207,6 +259,9 @@ def preprocess_data(data_path=None):
             print(f"  位置用户数量: 0")
             print(f"  基站数量: 0")
             print(f"  无法加载位置数据: {e}")
+    
+    # 保存训练实体记录（用于新用户推理时的过滤）
+    save_training_entities(url_mappings, base_station_mappings, Config.PROCESSED_DATA_PATH)
     
     return user_sequences, url_mappings, user_attributes, attribute_info, user_location_sequences, base_station_mappings, location_weights
 
@@ -605,7 +660,7 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
                       url_mappings, attribute_info, base_station_mappings=None, 
                       location_processor=None):
     """
-    加载新用户的所有数据
+    加载新用户的所有数据，并根据训练实体进行过滤
     
     Args:
         behavior_path: 新用户行为数据路径
@@ -625,6 +680,19 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
         'user_location_data': {}
     }
     
+    # 加载训练实体记录用于过滤
+    training_entities = load_training_entities(Config.PROCESSED_DATA_PATH)
+    if training_entities is None:
+        print("警告：无法加载训练实体记录，将尝试使用所有新用户数据（可能导致错误）")
+    else:
+        print(f"已加载训练实体记录: {len(training_entities['urls'])} 个URL")
+        if 'base_stations' in training_entities:
+            print(f"  {len(training_entities['base_stations'])} 个基站")
+    
+    # 初始化过滤统计变量
+    unknown_urls = set()
+    unknown_base_stations = set()
+    
     # 1. 加载新用户行为数据
     if os.path.exists(behavior_path):
         print(f"加载新用户行为数据: {behavior_path}")
@@ -636,23 +704,42 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
             df = pd.read_csv(behavior_path)
             print(f"新用户行为数据形状: {df.shape}")
             
-            # 处理行为序列，但只保留在训练集中出现过的URL
+            # 处理行为序列，根据训练实体记录进行过滤
             user_sequences = {}
             url_to_id = url_mappings['url_to_id']
+            
+            # 统计过滤信息
+            total_records = len(df)
+            filtered_records = 0
             
             # 按用户分组处理
             for user_id, group in df.groupby('user_id'):
                 sequence = []
                 for _, row in group.iterrows():
                     url = row['url']
+                    
+                    # 检查URL是否在训练实体记录中
+                    if training_entities and url not in training_entities['urls']:
+                        unknown_urls.add(url)
+                        filtered_records += 1
+                        continue
+                    
                     if url in url_to_id:  # 只处理训练时见过的URL
                         sequence.append(url_to_id[url])
+                    else:
+                        filtered_records += 1
                 
                 if sequence:  # 只保留有有效URL的用户
                     user_sequences[user_id] = sequence
             
             result['user_sequences'] = user_sequences
+            
+            # 输出过滤统计信息
             print(f"成功处理 {len(user_sequences)} 个新用户的行为序列")
+            if filtered_records > 0:
+                print(f"  过滤了 {filtered_records}/{total_records} 条记录（URL不在训练数据中）")
+                if unknown_urls:
+                    print(f"  未知URL示例: {list(unknown_urls)[:5]}{'...' if len(unknown_urls) > 5 else ''}")
             
         except Exception as e:
             print(f"加载新用户行为数据时出错: {e}")
@@ -714,18 +801,30 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
             location_weights = {}
             base_station_to_id = base_station_mappings['base_station_to_id']
             
+            # 统计过滤信息
+            total_location_records = len(location_df)
+            filtered_location_records = 0
+            
             for user_id, group in location_df.groupby('user_id'):
                 # 计算每个基站的权重（基于停留时间）
                 base_station_durations = group.groupby('base_station_id')['duration'].sum()
                 
-                # 只保留训练时见过的基站
+                # 根据训练实体记录过滤基站
                 valid_stations = []
                 valid_weights = []
                 
                 for bs_id, duration in base_station_durations.items():
+                    # 检查基站是否在训练实体记录中
+                    if training_entities and 'base_stations' in training_entities and bs_id not in training_entities['base_stations']:
+                        unknown_base_stations.add(bs_id)
+                        filtered_location_records += len(group[group['base_station_id'] == bs_id])
+                        continue
+                    
                     if bs_id in base_station_to_id:
                         valid_stations.append(base_station_to_id[bs_id])
                         valid_weights.append(duration)
+                    else:
+                        filtered_location_records += len(group[group['base_station_id'] == bs_id])
                 
                 if len(valid_stations) >= Config.LOCATION_MIN_CONNECTIONS:
                     # 生成位置序列（按时间排序）
@@ -743,11 +842,228 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
                 'location_weights': location_weights
             }
             print(f"成功处理 {len(user_location_sequences)} 个新用户的位置数据")
+            if filtered_location_records > 0:
+                print(f"  过滤了 {filtered_location_records}/{total_location_records} 条位置记录（基站不在训练数据中）")
+                if unknown_base_stations:
+                    print(f"  未知基站示例: {list(unknown_base_stations)[:5]}{'...' if len(unknown_base_stations) > 5 else ''}")
             
         except Exception as e:
             print(f"加载新用户位置数据时出错: {e}")
     
+    # 生成过滤报告
+    if training_entities:
+        # 生成报告保存路径
+        report_save_path = os.path.join(Config.PROCESSED_DATA_PATH, 'new_user_compatibility_report.json')
+        generate_filtering_report(result, training_entities, behavior_path, location_path, 
+                                unknown_urls, unknown_base_stations, report_save_path)
+    
     return result
+
+def generate_filtering_report(new_user_data, training_entities, behavior_path, location_path, 
+                            unknown_urls, unknown_base_stations, save_path=None):
+    """
+    生成新用户数据过滤报告
+    
+    Args:
+        new_user_data: 新用户数据字典
+        training_entities: 训练实体记录
+        behavior_path: 行为数据路径
+        location_path: 位置数据路径
+        unknown_urls: 未知URL集合
+        unknown_base_stations: 未知基站集合
+        save_path: 报告保存路径（可选）
+    """
+    print("\n" + "="*50)
+    print("🔍 新用户数据过滤报告")
+    print("="*50)
+    
+    # 基本统计
+    print(f"📊 处理结果统计:")
+    print(f"  ✅ 成功处理用户数量: {len(new_user_data['user_sequences'])}")
+    
+    # URL过滤统计
+    if unknown_urls:
+        print(f"\n🌐 URL过滤统计:")
+        print(f"  ❌ 未知URL数量: {len(unknown_urls)}")
+        print(f"  📝 训练URL数量: {len(training_entities['urls'])}")
+        print(f"  📋 未知URL列表: {sorted(unknown_urls)}")
+        
+        # 建议
+        print(f"\n💡 建议:")
+        print(f"  • 如果这些URL很重要，考虑将它们添加到训练数据中")
+        print(f"  • 或者可以将它们映射到相似的已知URL")
+    
+    # 基站过滤统计
+    if unknown_base_stations:
+        print(f"\n📡 基站过滤统计:")
+        print(f"  ❌ 未知基站数量: {len(unknown_base_stations)}")
+        print(f"  📝 训练基站数量: {len(training_entities['base_stations'])}")
+        print(f"  📋 未知基站列表: {sorted(unknown_base_stations)}")
+        
+        # 建议
+        print(f"\n💡 建议:")
+        print(f"  • 如果这些基站很重要，考虑将它们添加到训练数据中")
+        print(f"  • 或者检查基站ID的命名规范是否一致")
+    
+    # 数据质量评估
+    total_users = len(new_user_data['user_sequences'])
+    if total_users > 0:
+        print(f"\n📈 数据质量评估:")
+        
+        # 行为数据质量
+        avg_behavior_length = sum(len(seq) for seq in new_user_data['user_sequences'].values()) / total_users
+        print(f"  📱 平均行为序列长度: {avg_behavior_length:.1f}")
+        
+        # 位置数据质量
+        if 'user_location_data' in new_user_data and new_user_data['user_location_data']:
+            location_data = new_user_data['user_location_data']
+            if 'user_location_sequences' in location_data:
+                location_users = len(location_data['user_location_sequences'])
+                print(f"  📍 有位置数据的用户比例: {location_users/total_users*100:.1f}%")
+        
+        # 属性数据质量
+        if 'user_attributes' in new_user_data:
+            attr_users = len(new_user_data['user_attributes'])
+            print(f"  👤 有属性数据的用户比例: {attr_users/total_users*100:.1f}%")
+    
+    print("="*50)
+    
+    # 保存报告到文件
+    if save_path:
+        save_compatibility_report_to_file(new_user_data, training_entities, behavior_path, location_path,
+                                         unknown_urls, unknown_base_stations, save_path)
+
+def save_compatibility_report_to_file(new_user_data, training_entities, behavior_path, location_path,
+                                     unknown_urls, unknown_base_stations, save_path):
+    """
+    将兼容性报告保存到文件
+    """
+    import json
+    from datetime import datetime
+    
+    # 计算统计信息
+    total_users = len(new_user_data['user_sequences'])
+    
+    # 行为数据统计
+    behavior_stats = None
+    if unknown_urls is not None:
+        behavior_records = 0
+        filtered_behavior_records = 0
+        try:
+            if os.path.exists(behavior_path):
+                import pandas as pd
+                df = pd.read_csv(behavior_path)
+                behavior_records = len(df)
+                filtered_behavior_records = len(df[~df['url'].isin(training_entities['urls'])])
+        except:
+            pass
+            
+        behavior_stats = {
+            'total_records': behavior_records,
+            'filtered_records': filtered_behavior_records,
+            'unknown_urls_count': len(unknown_urls),
+            'unknown_urls': sorted(list(unknown_urls)),
+            'known_urls_count': len(training_entities['urls']),
+            'coverage': (len(training_entities['urls']) - len(unknown_urls)) / len(training_entities['urls']) if training_entities['urls'] else 0
+        }
+    
+    # 位置数据统计
+    location_stats = None
+    if unknown_base_stations is not None and 'base_stations' in training_entities:
+        location_records = 0
+        filtered_location_records = 0
+        try:
+            if os.path.exists(location_path):
+                import pandas as pd
+                df = pd.read_csv(location_path, sep='\t')
+                location_records = len(df)
+                filtered_location_records = len(df[~df['base_station_id'].isin(training_entities['base_stations'])])
+        except:
+            pass
+            
+        location_stats = {
+            'total_records': location_records,
+            'filtered_records': filtered_location_records,
+            'unknown_base_stations_count': len(unknown_base_stations),
+            'unknown_base_stations': sorted(list(unknown_base_stations)),
+            'known_base_stations_count': len(training_entities['base_stations']),
+            'coverage': (len(training_entities['base_stations']) - len(unknown_base_stations)) / len(training_entities['base_stations']) if training_entities['base_stations'] else 0
+        }
+    
+    # 数据质量评估
+    avg_behavior_length = sum(len(seq) for seq in new_user_data['user_sequences'].values()) / total_users if total_users > 0 else 0
+    
+    location_users = 0
+    if 'user_location_data' in new_user_data and new_user_data['user_location_data']:
+        location_data = new_user_data['user_location_data']
+        if 'user_location_sequences' in location_data:
+            location_users = len(location_data['user_location_sequences'])
+    
+    attr_users = len(new_user_data.get('user_attributes', {}))
+    
+    # 计算总体兼容性评分
+    total_score = 0
+    max_score = 0
+    if behavior_stats:
+        total_score += behavior_stats['coverage'] * 50
+        max_score += 50
+    if location_stats:
+        total_score += location_stats['coverage'] * 50
+        max_score += 50
+    
+    final_score = total_score / max_score if max_score > 0 else 1
+    
+    # 生成报告数据
+    report = {
+        'timestamp': datetime.now().isoformat(),
+        'experiment_info': {
+            'behavior_data_path': behavior_path,
+            'location_data_path': location_path,
+            'training_entities_count': {
+                'urls': len(training_entities['urls']),
+                'base_stations': len(training_entities.get('base_stations', []))
+            }
+        },
+        'processing_results': {
+            'total_users_processed': total_users,
+            'avg_behavior_sequence_length': round(avg_behavior_length, 2),
+            'users_with_location_data': location_users,
+            'users_with_attribute_data': attr_users,
+            'location_coverage_percent': round(location_users / total_users * 100, 1) if total_users > 0 else 0,
+            'attribute_coverage_percent': round(attr_users / total_users * 100, 1) if total_users > 0 else 0
+        },
+        'behavior_data_analysis': behavior_stats,
+        'location_data_analysis': location_stats,
+        'compatibility_assessment': {
+            'overall_score_percent': round(final_score * 100, 1),
+            'rating': (
+                'excellent' if final_score >= 0.8 else
+                'good' if final_score >= 0.6 else
+                'fair' if final_score >= 0.4 else
+                'poor'
+            ),
+            'recommendations': []
+        }
+    }
+    
+    # 添加建议
+    recommendations = []
+    if behavior_stats and behavior_stats['unknown_urls_count'] > 0:
+        recommendations.append("考虑将重要的未知URL添加到训练数据中")
+        recommendations.append("或者将未知URL映射到相似的已知URL")
+    
+    if location_stats and location_stats['unknown_base_stations_count'] > 0:
+        recommendations.append("检查基站ID的命名规范是否一致")
+        recommendations.append("考虑将重要的未知基站添加到训练数据中")
+    
+    report['compatibility_assessment']['recommendations'] = recommendations
+    
+    # 保存到JSON文件
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    
+    print(f"📄 兼容性报告已保存到: {save_path}")
 
 def load_training_config(experiment_dir):
     """
