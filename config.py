@@ -58,7 +58,7 @@ class Config:
     包含所有模型训练和评估的参数
     """
     # 实验配置
-    EXPERIMENT_NAME = "final_test"
+    EXPERIMENT_NAME = "form_bug_fix_test"
     
     # 基础路径配置
     BASE_DIR = BASE_DIR

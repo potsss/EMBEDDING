@@ -149,7 +149,7 @@ class LocationProcessor:
         df = df.drop_duplicates()
         
         # 按用户和时间排序
-        df['timestamp'] = pd.to_datetime(df['timestamp_str'])
+        df['timestamp'] = pd.to_datetime(df['timestamp_str']).dt.date
         df = df.sort_values(['user_id', 'timestamp'])
         
         # 创建基站ID映射
@@ -324,7 +324,7 @@ class LocationProcessor:
                 raise ValueError(f"缺少必要的列: {missing_columns}")
             
             # 转换时间戳
-            df['timestamp'] = pd.to_datetime(df['timestamp_str'])
+            df['timestamp'] = pd.to_datetime(df['timestamp_str']).dt.date
             
             # 过滤有效数据
             df = df[df['duration'] > 0]  # 过滤持续时间为0的记录
@@ -629,7 +629,7 @@ class DataPreprocessor:
         df = df[df['weight'] > 0]
         
         # 按时间戳排序 (将字符串转换为datetime对象进行排序)
-        df['timestamp_dt'] = pd.to_datetime(df['timestamp_str'])
+        df['timestamp_dt'] = pd.to_datetime(df['timestamp_str']).dt.date
         df = df.sort_values(['user_id', 'timestamp_dt'])
         df = df.drop(columns=['timestamp_dt']) # 删除辅助列
         

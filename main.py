@@ -701,7 +701,7 @@ def load_new_user_data(behavior_path, attribute_path, location_path,
             preprocessor = DataPreprocessor(Config)
             
             # 直接加载并处理行为数据
-            df = pd.read_csv(behavior_path)
+            df = pd.read_csv(behavior_path, sep='\t')
             print(f"新用户行为数据形状: {df.shape}")
             
             # 处理行为序列，根据训练实体记录进行过滤
@@ -952,7 +952,7 @@ def save_compatibility_report_to_file(new_user_data, training_entities, behavior
         try:
             if os.path.exists(behavior_path):
                 import pandas as pd
-                df = pd.read_csv(behavior_path)
+                df = pd.read_csv(behavior_path, sep='\t')
                 behavior_records = len(df)
                 filtered_behavior_records = len(df[~df['url'].isin(training_entities['urls'])])
         except:
