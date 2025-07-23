@@ -1337,6 +1337,65 @@ def main():
             if model is None:
                 print(f"无法从 {model_load_path} 加载模型，程序退出")
                 return
+                
+            # 加载属性相关模型（如果启用）- 添加此部分用于compute_embeddings模式
+            if Config.ENABLE_ATTRIBUTES:
+                attribute_info_path = os.path.join(Config.PROCESSED_DATA_PATH, "attribute_info.pkl")
+                if os.path.exists(attribute_info_path):
+                    with open(attribute_info_path, 'rb') as f:
+                        attribute_info = pickle.load(f)
+                    print("已加载属性信息")
+                    
+                    # 加载属性模型
+                    attribute_model_path = os.path.join(Config.MODEL_SAVE_PATH, "best_attribute_models.pth")
+                    if not os.path.exists(attribute_model_path):
+                        attribute_model_path = os.path.join(Config.MODEL_SAVE_PATH, "attribute_models.pth")
+                    
+                    if os.path.exists(attribute_model_path):
+                        attribute_model, fusion_model = load_attribute_models(attribute_model_path, attribute_info)
+                        print(f"已加载属性模型: {attribute_model_path}")
+                    else:
+                        print("警告：未找到属性模型文件，将跳过属性向量计算")
+                else:
+                    print("警告：未找到属性信息文件，将跳过属性向量计算")
+            
+            # 加载位置相关模型（如果启用）- 添加此部分用于compute_embeddings模式
+            if Config.ENABLE_LOCATION:
+                # 加载基站映射
+                base_station_mappings_path = os.path.join(Config.PROCESSED_DATA_PATH, "base_station_mappings.pkl")
+                if os.path.exists(base_station_mappings_path):
+                    with open(base_station_mappings_path, 'rb') as f:
+                        base_station_mappings = pickle.load(f)
+                    print(f"基站映射加载成功，包含 {len(base_station_mappings['base_station_to_id'])} 个基站")
+                    
+                    # 加载位置模型
+                    location_model_path = os.path.join(Config.MODEL_SAVE_PATH, f"location_{Config.LOCATION_MODEL_TYPE}_model.pth")
+                    if os.path.exists(location_model_path):
+                        vocab_size_location = len(base_station_mappings['base_station_to_id'])
+                        
+                        if Config.LOCATION_MODEL_TYPE == 'item2vec':
+                            location_model = Item2Vec(vocab_size_location, Config.LOCATION_EMBEDDING_DIM)
+                        else:  # node2vec
+                            location_model = Node2Vec(vocab_size_location, Config.LOCATION_EMBEDDING_DIM)
+                        
+                        # 加载位置模型权重
+                        checkpoint = torch.load(location_model_path, map_location=Config.DEVICE_OBJ)
+                        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                            location_model.load_state_dict(checkpoint['model_state_dict'])
+                        else:
+                            location_model.load_state_dict(checkpoint)
+                        
+                        location_model.eval()
+                        print(f"位置模型 ({Config.LOCATION_MODEL_TYPE}) 加载成功")
+                        
+                        # 创建位置处理器
+                        location_processor = LocationProcessor(Config)
+                        if Config.BASE_STATION_FEATURE_MODE != "none":
+                            location_processor.load_base_station_features(Config.LOCATION_FEATURES_PATH)
+                    else:
+                        print(f"警告：未找到位置模型文件 {location_model_path}")
+                else:
+                    print("警告：未找到基站映射文件，将跳过位置向量计算")
         
         # 加载属性模型（如果启用且存在）
         if Config.ENABLE_ATTRIBUTES and attribute_model is None and attribute_info is not None:
