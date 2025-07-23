@@ -58,7 +58,7 @@ class Config:
     包含所有模型训练和评估的参数
     """
     # 实验配置
-    EXPERIMENT_NAME = "form_bug_fix_test"
+    EXPERIMENT_NAME = "name_bug_fix_test"
     
     # 基础路径配置
     BASE_DIR = BASE_DIR
@@ -75,7 +75,7 @@ class Config:
     NEW_USER_LOCATION_PATH = "data/new_user_base_stations.tsv"  # 新用户位置数据
     
     # 行为向量相关配置
-    MODEL_TYPE = "node2vec"  # 可选 "item2vec" 或 "node2vec"
+    MODEL_TYPE = "item2vec"  # 可选 "item2vec" 或 "node2vec"
     EMBEDDING_DIM = 128
     WINDOW_SIZE = 5
     MIN_COUNT = 5

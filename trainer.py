@@ -874,15 +874,17 @@ class Trainer:
     """
     模型训练器
     """
-    def __init__(self, model, config=Config):
+    def __init__(self, model, config=Config, model_prefix=""):
         """
         初始化训练器
         Args:
             model: 要训练的模型
             config: 配置类
+            model_prefix: 模型文件名前缀，用于区分不同用途的模型
         """
         self.model = model
         self.config = config
+        self.model_prefix = model_prefix  # 添加模型前缀
         self.device = config.DEVICE_OBJ
         self.model.to(self.device)
         
@@ -1177,11 +1179,16 @@ class Trainer:
     def save_model(self):
         """
         保存最终模型
-        根据模型类型保存到不同的文件名，例如 item2vec_model.pth 或 node2vec_model.pth
+        根据模型类型保存到不同的文件名，支持自定义前缀避免覆盖
         """
         model_filename = "item2vec_model.pth"
         if isinstance(self.model, Node2Vec):
             model_filename = "node2vec_model.pth"
+        
+        # 添加前缀支持
+        if self.model_prefix:
+            base_name = model_filename.split('.')[0]  # 去掉.pth扩展名
+            model_filename = f"{self.model_prefix}_{base_name}.pth"
             
         model_path = os.path.join(self.config.MODEL_SAVE_PATH, model_filename)
         
@@ -1259,8 +1266,8 @@ def train_location_model(config, location_processor):
         from model import Item2Vec
         model = Item2Vec(len(all_base_stations), config.LOCATION_EMBEDDING_DIM)
         
-        # 创建训练器
-        trainer = Trainer(model, config)
+        # 创建训练器，使用"location"前缀避免与行为模型文件名冲突
+        trainer = Trainer(model, config, model_prefix="location")
         
         # 训练模型
         trainer.train(id_sequences)
@@ -1270,8 +1277,8 @@ def train_location_model(config, location_processor):
         from model import Node2Vec
         model = Node2Vec(len(all_base_stations), config.LOCATION_EMBEDDING_DIM)
         
-        # 创建训练器
-        trainer = Trainer(model, config)
+        # 创建训练器，使用"location"前缀避免与行为模型文件名冲突
+        trainer = Trainer(model, config, model_prefix="location")
         
         # 对于Node2Vec，需要先构建图和生成随机游走
         from utils.node2vec_utils import build_graph_from_sequences, generate_node2vec_walks_with_cache
@@ -1301,19 +1308,8 @@ def train_location_model(config, location_processor):
         'id_to_base_station': id_to_base_station
     }
     
-    # 保存位置模型
-    model_save_path = os.path.join(config.MODEL_SAVE_PATH, f"location_{config.LOCATION_MODEL_TYPE}_model.pth")
-    
-    # 保存模型状态
-    model_state = {
-        'model_state_dict': model.state_dict(),
-        'vocab_size': len(all_base_stations),
-        'embedding_dim': config.LOCATION_EMBEDDING_DIM,
-        'model_type': config.LOCATION_MODEL_TYPE
-    }
-    
-    torch.save(model_state, model_save_path)
-    print(f"位置模型已保存到: {model_save_path}")
+    # 注意：位置模型现在会通过Trainer自动保存为 location_item2vec_model.pth 或 location_node2vec_model.pth
+    # 这样就不会与行为模型的 item2vec_model.pth 或 node2vec_model.pth 文件冲突了
     
     # 保存基站映射
     mappings_save_path = os.path.join(config.PROCESSED_DATA_PATH, "base_station_mappings.pkl")
