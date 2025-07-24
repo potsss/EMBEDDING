@@ -1379,7 +1379,7 @@ def main():
                             location_model = Node2Vec(vocab_size_location, Config.LOCATION_EMBEDDING_DIM)
                         
                         # 加载位置模型权重
-                        checkpoint = torch.load(location_model_path, map_location=Config.DEVICE_OBJ)
+                        checkpoint = torch.load(location_model_path, map_location=Config.DEVICE_OBJ, weights_only=False)
                         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                             location_model.load_state_dict(checkpoint['model_state_dict'])
                         else:
@@ -1484,7 +1484,7 @@ def main():
                     model = Node2Vec(vocab_size, Config.EMBEDDING_DIM)
                 
                 # 加载模型权重
-                checkpoint = torch.load(behavior_model_path, map_location='cpu')
+                checkpoint = torch.load(behavior_model_path, map_location='cpu', weights_only=False)
                 if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                     model.load_state_dict(checkpoint['model_state_dict'])
                 else:
@@ -1537,7 +1537,7 @@ def main():
                             location_model = Node2Vec(vocab_size, Config.LOCATION_EMBEDDING_DIM)
                         
                         # 加载位置模型权重
-                        checkpoint = torch.load(location_model_path, map_location='cpu')
+                        checkpoint = torch.load(location_model_path, map_location='cpu', weights_only=False)
                         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                             location_model.load_state_dict(checkpoint['model_state_dict'])
                         else:

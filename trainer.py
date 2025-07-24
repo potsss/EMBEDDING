@@ -849,7 +849,7 @@ def load_attribute_models(model_path, attribute_info, config=Config):
     """
     加载训练好的属性模型
     """
-    checkpoint = torch.load(model_path, map_location=config.DEVICE_OBJ)
+    checkpoint = torch.load(model_path, map_location=config.DEVICE_OBJ, weights_only=False)
     
     # 重建模型
     attribute_model = AttributeEmbeddingModel(attribute_info, config)
@@ -1039,7 +1039,7 @@ class Trainer:
         加载检查点
         """
         if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.train_losses = checkpoint.get('train_losses', [])
@@ -1213,7 +1213,7 @@ class Trainer:
         """
         加载模型
         """
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         print(f"模型已加载: {model_path}")
 
