@@ -1337,7 +1337,7 @@ def main():
             if model is None:
                 print(f"无法从 {model_load_path} 加载模型，程序退出")
                 return
-                
+        
             # 加载属性相关模型（如果启用）- 添加此部分用于compute_embeddings模式
             if Config.ENABLE_ATTRIBUTES:
                 attribute_info_path = os.path.join(Config.PROCESSED_DATA_PATH, "attribute_info.pkl")

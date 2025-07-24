@@ -712,7 +712,7 @@ class EnhancedUserEmbedding:
             # 获取用户行为嵌入
             behavior_tensor = torch.tensor([behavior_embeddings[user_id]], dtype=torch.float32)
             
-            # 获取用户属性嵌入
+            # 获取用户属性嵌入，如果缺失则用零向量填充
             attribute_embedding = None
             if user_id in self.user_attributes:
                 user_attrs = self.user_attributes[user_id]
@@ -732,11 +732,21 @@ class EnhancedUserEmbedding:
                 # 计算属性嵌入
                 with torch.no_grad():
                     attribute_embedding = self.attribute_model(categorical_inputs, numerical_inputs)
+            else:
+                # 如果用户没有属性数据，使用零向量填充
+                from config import Config
+                if Config.ENABLE_ATTRIBUTES:
+                    attribute_embedding = torch.zeros(1, Config.ATTRIBUTE_EMBEDDING_DIM, dtype=torch.float32)
             
-            # 获取用户位置嵌入
+            # 获取用户位置嵌入，如果缺失则用零向量填充
             location_embedding = None
             if user_id in location_embeddings:
                 location_embedding = torch.tensor([location_embeddings[user_id]], dtype=torch.float32)
+            else:
+                # 如果用户没有位置数据，使用零向量填充
+                from config import Config
+                if Config.ENABLE_LOCATION:
+                    location_embedding = torch.zeros(1, Config.LOCATION_EMBEDDING_DIM, dtype=torch.float32)
             
             # 融合所有可用的嵌入
             with torch.no_grad():
