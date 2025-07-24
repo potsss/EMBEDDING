@@ -1,0 +1,6 @@
+user_id	age	gender	occupation	city	income_level	education_level	device_type
+user1	25	男	工程师	北京	3	本科	Android
+user2	30	女	教师	上海	2	硕士	iOS
+user3	35	男	医生	广州	4	硕士	Android
+user4	28	女	设计师	深圳	3	本科	iOS
+user5	32	男	销售	杭州	2	专科	Android 

@@ -714,7 +714,7 @@ class EnhancedUserEmbedding:
             
             # 获取用户属性嵌入，如果缺失则用零向量填充
             attribute_embedding = None
-            if user_id in self.user_attributes:
+            if self.user_attributes is not None and user_id in self.user_attributes:
                 user_attrs = self.user_attributes[user_id]
                 
                 # 准备属性输入
@@ -733,20 +733,66 @@ class EnhancedUserEmbedding:
                 with torch.no_grad():
                     attribute_embedding = self.attribute_model(categorical_inputs, numerical_inputs)
             else:
-                # 如果用户没有属性数据，使用零向量填充
+                # 如果用户没有属性数据，检查融合模型是否需要属性信息
                 from config import Config
-                if Config.ENABLE_ATTRIBUTES:
-                    attribute_embedding = torch.zeros(1, Config.ATTRIBUTE_EMBEDDING_DIM, dtype=torch.float32)
+                # 检查融合模型是否期望属性信息（通过检查其输入维度）
+                fusion_expects_attributes = False
+                if self.fusion_model is not None:
+                    first_layer_weight = None
+                    for layer in self.fusion_model.fusion_layers:
+                        if isinstance(layer, torch.nn.Linear):
+                            first_layer_weight = layer.weight
+                            break
+                    
+                    if first_layer_weight is not None:
+                        expected_input_dim = first_layer_weight.shape[1]
+                        behavior_dim = Config.EMBEDDING_DIM
+                        
+                        # 如果融合模型期望包含属性信息，提供零向量
+                        if (expected_input_dim == behavior_dim + Config.ATTRIBUTE_EMBEDDING_DIM or
+                            expected_input_dim == behavior_dim + Config.ATTRIBUTE_EMBEDDING_DIM + Config.LOCATION_EMBEDDING_DIM):
+                            fusion_expects_attributes = True
+                
+                if fusion_expects_attributes:
+                    if Config.ENABLE_ATTRIBUTES:
+                        # 用户启用属性信息但没有属性数据，使用零向量
+                        attribute_embedding = torch.zeros(1, Config.ATTRIBUTE_EMBEDDING_DIM, dtype=torch.float32)
+                    else:
+                        # 用户禁用属性信息，使用零向量
+                        attribute_embedding = torch.zeros(1, Config.ATTRIBUTE_EMBEDDING_DIM, dtype=torch.float32)
             
-            # 获取用户位置嵌入，如果缺失则用零向量填充
+            # 获取用户位置嵌入
             location_embedding = None
-            if user_id in location_embeddings:
-                location_embedding = torch.tensor([location_embeddings[user_id]], dtype=torch.float32)
-            else:
-                # 如果用户没有位置数据，使用零向量填充
-                from config import Config
-                if Config.ENABLE_LOCATION:
+            from config import Config
+            
+            # 检查融合模型是否期望位置信息（通过检查其输入维度）
+            fusion_expects_location = False
+            if self.fusion_model is not None:
+                first_layer_weight = None
+                for layer in self.fusion_model.fusion_layers:
+                    if isinstance(layer, torch.nn.Linear):
+                        first_layer_weight = layer.weight
+                        break
+                
+                if first_layer_weight is not None:
+                    expected_input_dim = first_layer_weight.shape[1]
+                    behavior_dim = Config.EMBEDDING_DIM
+                    attribute_dim = Config.ATTRIBUTE_EMBEDDING_DIM
+                    
+                    if expected_input_dim == behavior_dim + attribute_dim + Config.LOCATION_EMBEDDING_DIM:
+                        fusion_expects_location = True
+            
+            # 根据情况决定是否使用位置嵌入
+            if fusion_expects_location:
+                if Config.ENABLE_LOCATION and user_id in location_embeddings:
+                    # 用户启用位置信息且有真实位置数据
+                    location_embedding = torch.tensor([location_embeddings[user_id]], dtype=torch.float32)
+                else:
+                    # 用户禁用位置信息或没有位置数据，使用零向量
                     location_embedding = torch.zeros(1, Config.LOCATION_EMBEDDING_DIM, dtype=torch.float32)
+                    if not Config.ENABLE_LOCATION:
+                        # 这是用户有意禁用的情况，可以在此添加日志（但为了性能，暂时注释）
+                        pass
             
             # 融合所有可用的嵌入
             with torch.no_grad():

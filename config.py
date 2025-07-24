@@ -58,7 +58,7 @@ class Config:
     包含所有模型训练和评估的参数
     """
     # 实验配置
-    EXPERIMENT_NAME = "embedding_test"
+    EXPERIMENT_NAME = "form_bug_fix_test"
     
     # 基础路径配置
     BASE_DIR = BASE_DIR
@@ -66,8 +66,8 @@ class Config:
     EXPERIMENT_DIR = EXPERIMENT_DIR
     
     # 数据相关配置
-    DATA_PATH = "data/test_user_behavior.csv"  # 使用我们创建的测试数据
-    ATTRIBUTE_DATA_PATH = "data/sample_user_attributes.tsv"
+    DATA_PATH = "data/user_behavior.csv"  # 使用我们创建的测试数据
+    ATTRIBUTE_DATA_PATH = "data/user_attributes.tsv"
     
     # 新用户数据配置（用于推理阶段）
     NEW_USER_BEHAVIOR_PATH = "data/new_user_behavior.csv"  # 新用户行为数据
@@ -82,15 +82,15 @@ class Config:
     NEGATIVE_SAMPLES = 5
     
     # 属性向量相关配置
-    ENABLE_ATTRIBUTES = True  # 启用属性向量
+    ENABLE_ATTRIBUTES = False  # 启用属性向量
     ATTRIBUTE_EMBEDDING_DIM = 64  # 属性嵌入维度
     FUSION_HIDDEN_DIM = 256  # 融合层隐藏维度
     FINAL_USER_EMBEDDING_DIM = 256  # 最终用户嵌入维度
     
     # 位置相关配置
-    ENABLE_LOCATION = True   # 启用位置向量
-    LOCATION_DATA_PATH = "data/sample_user_base_stations.tsv"
-    LOCATION_FEATURES_PATH = "data/sample_base_station_features.tsv"
+    ENABLE_LOCATION = False   # 启用位置向量
+    LOCATION_DATA_PATH = "data/user_base_stations.tsv"
+    LOCATION_FEATURES_PATH = "data/base_station_features.tsv"
     LOCATION_EMBEDDING_DIM = 128
     LOCATION_MIN_CONNECTIONS = 2  # 用户最少需要连接的基站数量
     

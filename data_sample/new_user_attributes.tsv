@@ -1,0 +1,4 @@
+user_id	age	gender	occupation	city	income_level	education_level	device_type
+new_user_001	28	男	工程师	北京	3	本科	Android
+new_user_002	34	女	教师	上海	4	硕士	iOS
+new_user_003	25	男	设计师	广州	2	本科	Android 

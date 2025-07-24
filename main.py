@@ -518,12 +518,25 @@ def compute_enhanced_user_embeddings(behavior_model, attribute_model, fusion_mod
     """
     计算增强的用户嵌入向量（行为+属性+位置）
     """
-    if not Config.ENABLE_ATTRIBUTES or attribute_model is None or fusion_model is None:
-        print("属性模型不可用，使用基础用户嵌入")
+    # 检查是否需要使用融合模型（有属性信息或位置信息时需要）
+    use_fusion = False
+    available_modalities = ["行为"]
+    
+    if Config.ENABLE_ATTRIBUTES and attribute_model is not None and fusion_model is not None:
+        use_fusion = True
+        available_modalities.append("属性")
+    
+    if Config.ENABLE_LOCATION and location_model is not None and fusion_model is not None:
+        use_fusion = True
+        available_modalities.append("位置")
+    
+    if not use_fusion:
+        print("没有额外的模态信息可用，使用基础用户嵌入")
         return compute_user_embeddings(behavior_model, user_sequences, url_mappings, save_path)
     
     print("="*50)
-    print("计算增强用户嵌入向量（行为+属性+位置）")
+    modalities_str = "+".join(available_modalities)
+    print(f"计算增强用户嵌入向量（{modalities_str}）")
     print("="*50)
     
     # 创建增强用户嵌入计算器
@@ -1125,7 +1138,17 @@ def main():
     # 2. 对于推理相关模式，加载训练时的配置
     if args.mode in ['compute_new_users', 'visualize', 'compute_embeddings']:
         experiment_dir = get_experiment_dir(Config.EXPERIMENT_NAME)
+        
+        # 保存用户当前的模态配置设置（允许用户在推理时覆盖）
+        user_enable_attributes = Config.ENABLE_ATTRIBUTES
+        user_enable_location = Config.ENABLE_LOCATION
+        
         load_training_config(experiment_dir)
+        
+        # 恢复用户的模态配置设置
+        Config.ENABLE_ATTRIBUTES = user_enable_attributes  
+        Config.ENABLE_LOCATION = user_enable_location
+        print(f"用户推理配置: ENABLE_ATTRIBUTES={user_enable_attributes}, ENABLE_LOCATION={user_enable_location}")
     
     # 3. 设置随机种子
     set_random_seed(Config.RANDOM_SEED)
@@ -1338,8 +1361,8 @@ def main():
                 print(f"无法从 {model_load_path} 加载模型，程序退出")
                 return
         
-            # 加载属性相关模型（如果启用）- 添加此部分用于compute_embeddings模式
-            if Config.ENABLE_ATTRIBUTES:
+            # 加载属性相关模型（如果启用属性或位置信息）- 添加此部分用于compute_embeddings模式
+            if Config.ENABLE_ATTRIBUTES or Config.ENABLE_LOCATION:
                 attribute_info_path = os.path.join(Config.PROCESSED_DATA_PATH, "attribute_info.pkl")
                 if os.path.exists(attribute_info_path):
                     with open(attribute_info_path, 'rb') as f:
@@ -1355,11 +1378,18 @@ def main():
                         attribute_model, fusion_model = load_attribute_models(attribute_model_path, attribute_info)
                         print(f"已加载属性模型: {attribute_model_path}")
                     else:
-                        print("警告：未找到属性模型文件，将跳过属性向量计算")
+                        if Config.ENABLE_ATTRIBUTES:
+                            print("警告：未找到属性模型文件，将跳过属性向量计算")
+                        else:
+                            print("注意：仅启用位置信息，但未找到融合模型文件")
                 else:
-                    print("警告：未找到属性信息文件，将跳过属性向量计算")
+                    if Config.ENABLE_ATTRIBUTES:
+                        print("警告：未找到属性信息文件，将跳过属性向量计算")
+                    else:
+                        print("注意：仅启用位置信息，但未找到属性信息文件（融合模型需要）")
             
-            # 加载位置相关模型（如果启用）- 添加此部分用于compute_embeddings模式
+            # 加载位置相关模型（仅当用户真正启用时）
+            # 注意：即使用户禁用了位置信息，融合模型仍可能需要位置维度（将用零向量填充）
             if Config.ENABLE_LOCATION:
                 # 加载基站映射
                 base_station_mappings_path = os.path.join(Config.PROCESSED_DATA_PATH, "base_station_mappings.pkl")
@@ -1421,7 +1451,14 @@ def main():
     # 计算用户嵌入 (通常在'all'模式或者需要最终嵌入时运行)
     # 现在也为 'compute_embeddings' 模式启用
     if args.mode in ['all', 'compute_embeddings'] and model is not None and user_sequences is not None and url_mappings is not None:
-        if Config.ENABLE_ATTRIBUTES and attribute_model is not None and fusion_model is not None and user_attributes is not None:
+        # 检查是否需要使用融合模型（有属性信息或位置信息时需要）
+        use_enhanced_embeddings = False
+        if (Config.ENABLE_ATTRIBUTES and attribute_model is not None and user_attributes is not None) or \
+           (Config.ENABLE_LOCATION and location_model is not None):
+            if fusion_model is not None:
+                use_enhanced_embeddings = True
+        
+        if use_enhanced_embeddings:
             # 计算增强用户嵌入（支持位置信息）
             enhanced_embeddings_filename = f'enhanced_user_embeddings_{Config.MODEL_TYPE}.pkl'
             enhanced_embeddings_path = os.path.join(Config.MODEL_SAVE_PATH, enhanced_embeddings_filename)
