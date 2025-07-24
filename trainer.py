@@ -806,10 +806,14 @@ class AttributeTrainer:
             'prediction_model_state_dict': self.prediction_model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'attribute_info': self.attribute_info,
-            'config_dict': {
+            'config': {
+                'EMBEDDING_DIM': self.config.EMBEDDING_DIM,
                 'ATTRIBUTE_EMBEDDING_DIM': self.config.ATTRIBUTE_EMBEDDING_DIM,
+                'LOCATION_EMBEDDING_DIM': self.config.LOCATION_EMBEDDING_DIM,
                 'FUSION_HIDDEN_DIM': self.config.FUSION_HIDDEN_DIM,
-                'FINAL_USER_EMBEDDING_DIM': self.config.FINAL_USER_EMBEDDING_DIM
+                'FINAL_USER_EMBEDDING_DIM': self.config.FINAL_USER_EMBEDDING_DIM,
+                'ENABLE_LOCATION': self.config.ENABLE_LOCATION,
+                'ENABLE_ATTRIBUTES': self.config.ENABLE_ATTRIBUTES
             }
         }
         
@@ -855,11 +859,45 @@ def load_attribute_models(model_path, attribute_info, config=Config):
     attribute_model = AttributeEmbeddingModel(attribute_info, config)
     attribute_model.load_state_dict(checkpoint['attribute_model_state_dict'])
     
-    behavior_dim = config.EMBEDDING_DIM
-    attribute_dim = config.ATTRIBUTE_EMBEDDING_DIM
-    location_dim = config.LOCATION_EMBEDDING_DIM if config.ENABLE_LOCATION else None
+    # 从checkpoint中获取训练时的配置信息，提供旧格式兼容性
+    training_config = checkpoint.get('config', checkpoint.get('config_dict', {}))
+    
+    behavior_dim = training_config.get('EMBEDDING_DIM', config.EMBEDDING_DIM)
+    attribute_dim = training_config.get('ATTRIBUTE_EMBEDDING_DIM', config.ATTRIBUTE_EMBEDDING_DIM)
+    
+    # 关键修复：从训练时的配置确定是否启用了位置信息
+    # 如果没有保存配置信息，通过检查融合模型权重的维度来推断
+    enable_location = training_config.get('ENABLE_LOCATION', config.ENABLE_LOCATION)
+    location_dim = training_config.get('LOCATION_EMBEDDING_DIM', config.LOCATION_EMBEDDING_DIM) if enable_location else None
+    
+    # 兼容性检查：如果没有配置信息，从模型权重推断维度
+    if not training_config and 'fusion_model_state_dict' in checkpoint:
+        fusion_weight = checkpoint['fusion_model_state_dict']['fusion_layers.0.weight']
+        expected_input_dim = fusion_weight.shape[1]  # 输入维度
+        
+        print(f"从模型权重推断输入维度: {expected_input_dim}")
+        
+        # 推断是否启用了位置信息
+        if expected_input_dim == behavior_dim + attribute_dim:
+            # 没有位置信息
+            enable_location = False
+            location_dim = None
+            print("推断结果: 未启用位置信息")
+        elif expected_input_dim == behavior_dim + attribute_dim + config.LOCATION_EMBEDDING_DIM:
+            # 启用了位置信息
+            enable_location = True
+            location_dim = config.LOCATION_EMBEDDING_DIM
+            print("推断结果: 启用位置信息")
+        else:
+            print(f"警告: 无法推断模型配置，期望维度 {expected_input_dim} 不匹配标准组合")
+            # 尝试使用当前配置
+            enable_location = config.ENABLE_LOCATION
+            location_dim = config.LOCATION_EMBEDDING_DIM if enable_location else None
+    
     fusion_model = UserFusionModel(behavior_dim, attribute_dim, location_dim, config)
     fusion_model.load_state_dict(checkpoint['fusion_model_state_dict'])
+    
+    print(f"加载的融合模型配置: behavior_dim={behavior_dim}, attribute_dim={attribute_dim}, location_dim={location_dim}")
     
     return attribute_model, fusion_model
 
